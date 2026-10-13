@@ -1383,7 +1383,7 @@ const App = struct {
         self.pending_new_window = cascadedRequest(from, cwd, null);
     }
 
-    /// Cmd+Shift+M: detach `idx` of `from` into a new window opened next frame
+    /// Cmd+Shift+P: detach `idx` of `from` into a new window opened next frame
     /// step (after the event drain). A lone visible terminal stays put.
     fn requestMoveToNewWindow(self: *App, from: *Window, idx: usize) void {
         const now = std.time.milliTimestamp();
@@ -1856,6 +1856,14 @@ const Window = struct {
 
         self.window_x = geometry.x;
         self.window_y = geometry.y;
+        var actual_x: c_int = 0;
+        var actual_y: c_int = 0;
+        if (c.SDL_GetWindowPosition(self.pw.window, &actual_x, &actual_y)) {
+            self.window_x = actual_x;
+            self.window_y = actual_y;
+        } else {
+            log.warn("could not read window position: {s}", .{c.SDL_GetError()});
+        }
 
         const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
         const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, self.render_height, self.ui_scale, self.grid.rows);
@@ -2754,8 +2762,8 @@ const Window = struct {
                     return;
                 }
 
-                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_M) {
-                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧M", now);
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_P) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧P", now);
                     app.requestMoveToNewWindow(self, self.anim_state.focused_session);
                     return;
                 }
