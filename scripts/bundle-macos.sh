@@ -35,7 +35,7 @@ if [[ -z "$MCP_EXECUTABLE" ]]; then
     MCP_EXECUTABLE="$(dirname "$EXECUTABLE")/architect-mcp"
 fi
 
-APP_NAME="Architect"
+APP_NAME="Cadre"
 APP_DIR="$OUTPUT_DIR/${APP_NAME}.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"

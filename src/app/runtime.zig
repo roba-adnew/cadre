@@ -22,6 +22,11 @@ const session_state = @import("../session/state.zig");
 const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
 const macos_input = @import("../platform/macos_input_source.zig");
+const macos_titlebar = @import("../platform/macos_titlebar.zig");
+
+/// User-facing app name (window title bar, bundle display name). Internal
+/// identifiers (config dir, sockets, tmux prefix, env vars) keep "architect".
+pub const app_name: [*:0]const u8 = "CADRE";
 const input = @import("../input/mapper.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const pty_mod = @import("../pty.zig");
@@ -1745,13 +1750,14 @@ pub fn run() !void {
         null;
 
     var sdl = try platform.init(
-        "ARCHITECT",
+        app_name,
         persistence.window.width,
         persistence.window.height,
         window_pos,
         config.rendering.vsync,
     );
     defer platform.deinit(&sdl);
+    macos_titlebar.style(sdl.window, app_name, theme.background.r, theme.background.g, theme.background.b);
     platform.startTextInput(sdl.window);
     defer platform.stopTextInput(sdl.window);
     const notify_thread = try notify.startNotifyThread(

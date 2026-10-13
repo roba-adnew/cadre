@@ -55,6 +55,7 @@ Architect solves this with a grid view that keeps all your agents visible, with 
 - Replies to OSC 4/10/11 color queries using the live terminal palette/default colors so Codex and similar CLIs do not stall on startup probes
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions
+- The native macOS title bar is tinted to the theme background, with the app name at its far right (title text and traffic lights follow the theme's light/dark luminance)
 
 ## Installation
 

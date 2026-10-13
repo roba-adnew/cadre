@@ -21,10 +21,13 @@ cd "$ROOT"
 # match (its comm is the full bundle exe path), so pgrep silently returns
 # nothing and the live-agent guard below would no-op while the reload still
 # quits the app and kills its agents. ps lists it reliably.
-APP_EXE="/Applications/Architect.app/Contents/MacOS/architect"
+APP_EXE="/Applications/Cadre.app/Contents/MacOS/architect"
+# Pre-rename bundle path: still matched so the first reload after the rename
+# waits for (and guards) the old app instead of racing it for tmux sessions.
+LEGACY_APP_EXE="/Applications/Architect.app/Contents/MacOS/architect"
 # `|| true`: awk's early `exit` can SIGPIPE ps mid-write (load-dependent), and
 # under set -e -o pipefail that 141 silently kills the whole script.
-daily_pid() { ps -Axo pid=,comm= | awk -v exe="$APP_EXE" '$2 == exe { print $1; exit }' || true; }
+daily_pid() { ps -Axo pid=,comm= | awk -v exe="$APP_EXE" -v legacy="$LEGACY_APP_EXE" '$2 == exe || $2 == legacy { print $1; exit }' || true; }
 
 # Returns 0 if any descendant of pid $1 looks like a running agent CLI
 # (claude/codex/gemini) — i.e. restarting the app would kill a live agent.
@@ -134,6 +137,8 @@ nohup bash -c '
     # caffeinate -w waits on the process-exit event (no polling, no re-sending the
     # quit). A watchdog force-kills ONLY if the teardown truly hangs (~5 min),
     # which loses agent state.
+    osascript -e "quit app \"Cadre\"" 2>/dev/null || true
+    # Legacy bundle name (pre-rename); quit + remove it once so the swap is clean.
     osascript -e "quit app \"Architect\"" 2>/dev/null || true
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
         ( sleep 300; kill -TERM "$old_pid" 2>/dev/null; sleep 2; kill -KILL "$old_pid" 2>/dev/null ) &
@@ -142,10 +147,10 @@ nohup bash -c '
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
     fi
-    rm -rf "/Applications/Architect.app"
-    mv "$staging/Architect.app" "/Applications/Architect.app"
+    rm -rf "/Applications/Cadre.app" "/Applications/Architect.app"
+    mv "$staging/Cadre.app" "/Applications/Cadre.app"
     rmdir "$staging" 2>/dev/null || true
-    open "/Applications/Architect.app"
+    open "/Applications/Cadre.app"
 ' _ "$staging" "$old_pid" >/dev/null 2>&1 &
 disown
 
