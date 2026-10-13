@@ -33,4 +33,5 @@ test {
     _ = @import("session/hosting.zig");
     _ = @import("session/notify.zig");
     _ = @import("ui/types.zig");
+    _ = @import("ui/components/context_menu.zig");
 }

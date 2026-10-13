@@ -361,15 +361,10 @@ pub const SessionInteractionComponent = struct {
                         // so Cmd+C has nothing to copy.
                         const shift_held = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
 
-                        // Right-click pastes the clipboard (PuTTY/xterm-style),
-                        // regardless of the program's mouse mode. Handled before the
-                        // mouse-tracking forward so it never reaches the program.
-                        if (event.button.button == c.SDL_BUTTON_RIGHT) {
-                            actions.append(.PasteIntoFocused) catch |err| {
-                                log.warn("failed to queue paste action: {}", .{err});
-                            };
-                            return true;
-                        }
+                        // Right-click opens the context menu (context_menu.zig, which
+                        // sits above this component and consumes the press). Swallow a
+                        // stray press here so the program never sees it.
+                        if (event.button.button == c.SDL_BUTTON_RIGHT) return true;
 
                         // Double-click in a focused pane returns to grid, even when
                         // the focused program (Claude/vim/pagers) has mouse reporting
