@@ -459,7 +459,7 @@ test "collectHidden picks only spawned+hidden, preserving index order" {
 
 test "collectHidden filters by folder, case-insensitive" {
     var buf: [max_entries]usize = undefined;
-    const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "ARCH", &buf);
+    const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "CAD", &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(usize, 1), buf[0]);
 
