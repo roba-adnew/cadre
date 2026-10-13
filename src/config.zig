@@ -399,6 +399,18 @@ pub const Persistence = struct {
         /// and the startup reaper then killed the orphan. Null = legacy file
         /// without indices; restore falls back to the slot position.
         persist_index: ?usize = null,
+        /// Which window (index into `windows`) the terminal was shown in.
+        /// Absent in older files: everything belongs to window 0.
+        window_index: usize = 0,
+    };
+
+    /// Per-window geometry and view state. `windows[0]` is mirrored into the
+    /// legacy top-level `window` / `focused_session` / `zoomed` on save so an
+    /// older build still restores every terminal into one window.
+    pub const WindowEntry = struct {
+        window: WindowConfig = .{},
+        focused_session: usize = 0,
+        zoomed: bool = false,
     };
 
     window: WindowConfig = .{},
@@ -424,6 +436,9 @@ pub const Persistence = struct {
     /// Per-grid-shape font-scale presets, keyed by "<cols>x<rows>", so each grid
     /// shape remembers its own zoom level across relaunches.
     grid_font_presets: std.ArrayListUnmanaged(GridFontPreset) = .{},
+    /// One entry per open window, in window order. Never empty after load()
+    /// (see ensureWindowEntries).
+    windows: std.ArrayListUnmanaged(WindowEntry) = .{},
 
     pub const GridFontPreset = struct {
         dims: []const u8,
@@ -444,6 +459,17 @@ pub const Persistence = struct {
         grid_font_scale: f32 = 0,
         persist_epoch: ?[]const u8 = null,
         grid_font_presets: ?toml.HashMap(f32) = null,
+        terminal_windows: ?[]const i64 = null,
+        windows: ?[]const TomlWindowEntry = null,
+    };
+
+    const TomlWindowEntry = struct {
+        x: i32 = -1,
+        y: i32 = -1,
+        width: i32 = 1280,
+        height: i32 = 720,
+        focused_session: usize = 0,
+        zoomed: bool = false,
     };
 
     const TomlPersistenceV2 = struct {
@@ -475,6 +501,18 @@ pub const Persistence = struct {
         self.recent_folders.deinit(allocator);
         self.clearGridFontPresets(allocator);
         self.grid_font_presets.deinit(allocator);
+        self.windows.deinit(allocator);
+    }
+
+    /// Guarantee at least one window entry, synthesized from the legacy
+    /// top-level fields when the file predates `[[windows]]`.
+    pub fn ensureWindowEntries(self: *Persistence, allocator: std.mem.Allocator) !void {
+        if (self.windows.items.len > 0) return;
+        try self.windows.append(allocator, .{
+            .window = self.window,
+            .focused_session = self.focused_session,
+            .zoomed = self.zoomed,
+        });
     }
 
     /// Generate the per-install tmux-name epoch if it isn't set yet. Returns true
@@ -496,6 +534,13 @@ pub const Persistence = struct {
     }
 
     pub fn load(allocator: std.mem.Allocator) !Persistence {
+        var persistence = try loadRaw(allocator);
+        errdefer persistence.deinit(allocator);
+        try persistence.ensureWindowEntries(allocator);
+        return persistence;
+    }
+
+    fn loadRaw(allocator: std.mem.Allocator) !Persistence {
         const persistence_path = try getPersistencePath(allocator);
         defer allocator.free(persistence_path);
 
@@ -518,47 +563,8 @@ pub const Persistence = struct {
 
         if (parser_v3.parseString(contents)) |result| {
             defer result.deinit();
-            persistence.window = result.value.window;
-            persistence.font_size = result.value.font_size;
-            persistence.focused_session = result.value.focused_session;
-            persistence.zoomed = result.value.zoomed;
-            persistence.grid_font_scale = result.value.grid_font_scale;
-            // Dupe into our own memory before the parser arena is freed (result.deinit).
-            if (result.value.persist_epoch) |epoch| {
-                if (epoch.len > 0) persistence.persist_epoch = try allocator.dupe(u8, epoch);
-            }
-
-            if (result.value.terminals) |paths| {
-                for (paths, 0..) |path, idx| {
-                    const agent_type = if (result.value.terminal_agent_types) |types|
-                        if (idx < types.len and types[idx].len > 0) types[idx] else null
-                    else
-                        null;
-                    const agent_session_id = if (result.value.terminal_session_ids) |ids|
-                        if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
-                    else
-                        null;
-                    const hidden = if (result.value.terminal_hidden) |flags|
-                        idx < flags.len and flags[idx]
-                    else
-                        false;
-                    const persist_index: ?usize = if (result.value.terminal_persist_indices) |indices|
-                        if (idx < indices.len and indices[idx] >= 0) @intCast(indices[idx]) else null
-                    else
-                        null;
-                    try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, hidden, persist_index);
-                }
-            }
-
-            if (result.value.recent_folders) |folders_map| {
-                try persistence.loadRecentFoldersFromMap(allocator, folders_map);
-            }
-
-            if (result.value.grid_font_presets) |presets_map| {
-                try persistence.loadGridFontPresetsFromMap(allocator, presets_map);
-            }
-
-            return persistence;
+            persistence.deinit(allocator);
+            return try fromV3(allocator, result.value);
         } else |_| {}
 
         // Try V2 format (recent_folders as array, migrate to counts)
@@ -607,6 +613,67 @@ pub const Persistence = struct {
         return persistence;
     }
 
+    /// Map a parsed V3 document into owned state. Dupes every string before
+    /// the parser arena is freed. Exposed for round-trip tests.
+    pub fn fromV3(allocator: std.mem.Allocator, value: TomlPersistenceV3) !Persistence {
+        var persistence = Persistence.init(allocator);
+        errdefer persistence.deinit(allocator);
+        persistence.window = value.window;
+        persistence.font_size = value.font_size;
+        persistence.focused_session = value.focused_session;
+        persistence.zoomed = value.zoomed;
+        persistence.grid_font_scale = value.grid_font_scale;
+        if (value.persist_epoch) |epoch| {
+            if (epoch.len > 0) persistence.persist_epoch = try allocator.dupe(u8, epoch);
+        }
+
+        if (value.terminals) |paths| {
+            for (paths, 0..) |path, idx| {
+                const agent_type = if (value.terminal_agent_types) |types|
+                    if (idx < types.len and types[idx].len > 0) types[idx] else null
+                else
+                    null;
+                const agent_session_id = if (value.terminal_session_ids) |ids|
+                    if (idx < ids.len and ids[idx].len > 0) ids[idx] else null
+                else
+                    null;
+                const hidden = if (value.terminal_hidden) |flags|
+                    idx < flags.len and flags[idx]
+                else
+                    false;
+                const persist_index: ?usize = if (value.terminal_persist_indices) |indices|
+                    if (idx < indices.len and indices[idx] >= 0) @intCast(indices[idx]) else null
+                else
+                    null;
+                const window_index: usize = if (value.terminal_windows) |wins|
+                    if (idx < wins.len and wins[idx] >= 0) @intCast(wins[idx]) else 0
+                else
+                    0;
+                try persistence.appendTerminalEntryInWindow(allocator, path, agent_type, agent_session_id, hidden, persist_index, window_index);
+            }
+        }
+
+        if (value.windows) |wins| {
+            for (wins) |w| {
+                try persistence.windows.append(allocator, .{
+                    .window = .{ .x = w.x, .y = w.y, .width = w.width, .height = w.height },
+                    .focused_session = w.focused_session,
+                    .zoomed = w.zoomed,
+                });
+            }
+        }
+
+        if (value.recent_folders) |folders_map| {
+            try persistence.loadRecentFoldersFromMap(allocator, folders_map);
+        }
+
+        if (value.grid_font_presets) |presets_map| {
+            try persistence.loadGridFontPresetsFromMap(allocator, presets_map);
+        }
+
+        return persistence;
+    }
+
     pub fn save(self: Persistence, allocator: std.mem.Allocator) !void {
         const persistence_path = try getPersistencePath(allocator);
         defer allocator.free(persistence_path);
@@ -631,9 +698,16 @@ pub const Persistence = struct {
 
     pub fn serializeToWriter(self: Persistence, writer: anytype) !void {
         // Write top-level scalars first (must precede any [section] in TOML).
+        // The legacy single-window fields mirror windows[0] so an older build
+        // restores everything into one window.
+        const primary: WindowEntry = if (self.windows.items.len > 0) self.windows.items[0] else .{
+            .window = self.window,
+            .focused_session = self.focused_session,
+            .zoomed = self.zoomed,
+        };
         try writer.print("font_size = {d}\n", .{self.font_size});
-        try writer.print("focused_session = {d}\n", .{self.focused_session});
-        try writer.print("zoomed = {}\n", .{self.zoomed});
+        try writer.print("focused_session = {d}\n", .{primary.focused_session});
+        try writer.print("zoomed = {}\n", .{primary.zoomed});
         try writer.print("grid_font_scale = {d:.3}\n", .{self.grid_font_scale});
         if (self.persist_epoch.len > 0) {
             try writer.writeAll("persist_epoch = ");
@@ -695,14 +769,38 @@ pub const Persistence = struct {
                 }
                 try writer.writeAll("]\n");
             }
+
+            // Window membership; absent => every terminal in window 0.
+            const multi_window = for (self.terminal_entries.items) |entry| {
+                if (entry.window_index != 0) break true;
+            } else false;
+            if (multi_window) {
+                try writer.writeAll("terminal_windows = [");
+                for (self.terminal_entries.items, 0..) |entry, idx| {
+                    if (idx != 0) try writer.writeAll(", ");
+                    try writer.print("{d}", .{entry.window_index});
+                }
+                try writer.writeAll("]\n");
+            }
         }
 
-        // Write [window] section
+        // Write [window] section (mirror of windows[0])
         try writer.writeAll("[window]\n");
-        try writer.print("height = {d}\n", .{self.window.height});
-        try writer.print("width = {d}\n", .{self.window.width});
-        try writer.print("x = {d}\n", .{self.window.x});
-        try writer.print("y = {d}\n", .{self.window.y});
+        try writer.print("height = {d}\n", .{primary.window.height});
+        try writer.print("width = {d}\n", .{primary.window.width});
+        try writer.print("x = {d}\n", .{primary.window.x});
+        try writer.print("y = {d}\n", .{primary.window.y});
+
+        // One [[windows]] table per open window, in window order.
+        for (self.windows.items) |w| {
+            try writer.writeAll("\n[[windows]]\n");
+            try writer.print("x = {d}\n", .{w.window.x});
+            try writer.print("y = {d}\n", .{w.window.y});
+            try writer.print("width = {d}\n", .{w.window.width});
+            try writer.print("height = {d}\n", .{w.window.height});
+            try writer.print("focused_session = {d}\n", .{w.focused_session});
+            try writer.print("zoomed = {}\n", .{w.zoomed});
+        }
 
         // Write [recent_folders] section as table with counts
         if (self.recent_folders.items.len > 0) {
@@ -743,6 +841,19 @@ pub const Persistence = struct {
         hidden: bool,
         persist_index: ?usize,
     ) !void {
+        try self.appendTerminalEntryInWindow(allocator, path, agent_type, agent_session_id, hidden, persist_index, 0);
+    }
+
+    pub fn appendTerminalEntryInWindow(
+        self: *Persistence,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        agent_type: ?[]const u8,
+        agent_session_id: ?[]const u8,
+        hidden: bool,
+        persist_index: ?usize,
+        window_index: usize,
+    ) !void {
         const path_copy = try allocator.dupe(u8, path);
         errdefer allocator.free(path_copy);
 
@@ -764,6 +875,7 @@ pub const Persistence = struct {
             .agent_session_id = agent_session_id_copy,
             .hidden = hidden,
             .persist_index = persist_index,
+            .window_index = window_index,
         });
     }
 
@@ -1860,4 +1972,74 @@ test "Persistence.appendRecentFolder skipping logic: removeRecentFolder leaves o
     for (folders) |f| {
         try std.testing.expect(!std.mem.eql(u8, f.path, "/"));
     }
+}
+
+test "Persistence round-trips two windows through [[windows]] and terminal_windows" {
+    const allocator = std.testing.allocator;
+    var persistence = Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+    try persistence.windows.append(allocator, .{ .window = .{ .x = 10, .y = 20, .width = 800, .height = 600 }, .focused_session = 1, .zoomed = true });
+    try persistence.windows.append(allocator, .{ .window = .{ .x = 50, .y = 60, .width = 640, .height = 480 }, .focused_session = 0, .zoomed = false });
+    try persistence.appendTerminalEntryInWindow(allocator, "/a", null, null, false, 0, 0);
+    try persistence.appendTerminalEntryInWindow(allocator, "/b", null, null, true, 1, 0);
+    try persistence.appendTerminalEntryInWindow(allocator, "/c", null, null, false, 144, 1);
+
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try persistence.serializeToWriter(&writer.writer);
+
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+    const result = try parser.parseString(writer.written());
+    defer result.deinit();
+    var loaded = try Persistence.fromV3(allocator, result.value);
+    defer loaded.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), loaded.windows.items.len);
+    try std.testing.expectEqual(@as(i32, 50), loaded.windows.items[1].window.x);
+    try std.testing.expectEqual(@as(i32, 480), loaded.windows.items[1].window.height);
+    try std.testing.expect(loaded.windows.items[0].zoomed);
+    try std.testing.expectEqual(@as(usize, 1), loaded.windows.items[0].focused_session);
+    // Legacy mirror of windows[0] for older builds.
+    try std.testing.expectEqual(@as(i32, 800), loaded.window.width);
+    try std.testing.expectEqual(@as(usize, 1), loaded.focused_session);
+    try std.testing.expect(loaded.zoomed);
+    try std.testing.expectEqual(@as(usize, 3), loaded.terminal_entries.items.len);
+    try std.testing.expectEqual(@as(usize, 0), loaded.terminal_entries.items[0].window_index);
+    try std.testing.expectEqual(@as(usize, 1), loaded.terminal_entries.items[2].window_index);
+    try std.testing.expectEqual(@as(?usize, 144), loaded.terminal_entries.items[2].persist_index);
+    try std.testing.expect(loaded.terminal_entries.items[1].hidden);
+}
+
+test "Persistence without window keys loads as one window holding every terminal" {
+    const allocator = std.testing.allocator;
+    const legacy =
+        \\font_size = 14
+        \\focused_session = 2
+        \\zoomed = true
+        \\terminals = ["/x", "/y", "/z"]
+        \\terminal_persist_indices = [0, 7, 2]
+        \\[window]
+        \\height = 700
+        \\width = 900
+        \\x = 5
+        \\y = 6
+        \\
+    ;
+    var parser = toml.Parser(Persistence.TomlPersistenceV3).init(allocator);
+    defer parser.deinit();
+    const result = try parser.parseString(legacy);
+    defer result.deinit();
+    var loaded = try Persistence.fromV3(allocator, result.value);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), loaded.windows.items.len);
+    try loaded.ensureWindowEntries(allocator);
+    try std.testing.expectEqual(@as(usize, 1), loaded.windows.items.len);
+    try std.testing.expectEqual(@as(i32, 900), loaded.windows.items[0].window.width);
+    try std.testing.expectEqual(@as(usize, 2), loaded.windows.items[0].focused_session);
+    try std.testing.expect(loaded.windows.items[0].zoomed);
+    for (loaded.terminal_entries.items) |entry| {
+        try std.testing.expectEqual(@as(usize, 0), entry.window_index);
+    }
+    try std.testing.expectEqual(@as(?usize, 7), loaded.terminal_entries.items[1].persist_index);
 }

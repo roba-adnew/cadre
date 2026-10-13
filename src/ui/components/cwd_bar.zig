@@ -160,8 +160,8 @@ pub const CwdBarComponent = struct {
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 230);
+        const panel_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 230);
         const bg_rect = c.SDL_FRect{
             .x = @floatFromInt(bar_rect.x),
             .y = @floatFromInt(bar_rect.y),

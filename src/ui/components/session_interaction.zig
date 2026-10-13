@@ -361,15 +361,10 @@ pub const SessionInteractionComponent = struct {
                         // so Cmd+C has nothing to copy.
                         const shift_held = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
 
-                        // Right-click pastes the clipboard (PuTTY/xterm-style),
-                        // regardless of the program's mouse mode. Handled before the
-                        // mouse-tracking forward so it never reaches the program.
-                        if (event.button.button == c.SDL_BUTTON_RIGHT) {
-                            actions.append(.PasteIntoFocused) catch |err| {
-                                log.warn("failed to queue paste action: {}", .{err});
-                            };
-                            return true;
-                        }
+                        // Right-click opens the context menu (context_menu.zig, which
+                        // sits above this component and consumes the press). Swallow a
+                        // stray press here so the program never sees it.
+                        if (event.button.button == c.SDL_BUTTON_RIGHT) return true;
 
                         // Double-click in a focused pane returns to grid, even when
                         // the focused program (Claude/vim/pagers) has mouse reporting
@@ -855,15 +850,10 @@ pub const SessionInteractionComponent = struct {
         if (self.reorder_phase != .active or !inGridView(host.view_mode)) return;
         const rect = sessionRectForIndex(host, self.reorder_slot) orelse return;
         const thickness = dpi.scale(renderer_mod.grid_border_thickness + 2, host.ui_scale);
-        // Neutral gray with contrast against the theme: light gray on dark
-        // backgrounds, dark gray on light ones (Theme has no mode field, so
-        // background luminance is the signal).
-        const bg = host.theme.background;
-        const light_bg = @as(u32, bg.r) + @as(u32, bg.g) + @as(u32, bg.b) > 382;
-        const lift_gray: c.SDL_Color = if (light_bg)
-            .{ .r = 90, .g = 90, .b = 90, .a = 220 }
-        else
-            .{ .r = 190, .g = 190, .b = 190, .a = 220 };
+        // Theme text color at reduced alpha: reads as a lifted outline on both
+        // light and dark themes.
+        const lift_fg = host.theme.chromeText();
+        const lift_gray: c.SDL_Color = .{ .r = lift_fg.r, .g = lift_fg.g, .b = lift_fg.b, .a = 220 };
         primitives.drawThickBorder(renderer, rect, thickness, dpi.scale(6, host.ui_scale), lift_gray);
     }
 

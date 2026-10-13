@@ -189,7 +189,8 @@ pub const RestartButtonsComponent = struct {
         const is_hovered = if (self.hovered_session) |h| h == session_idx else false;
         if (is_hovered) {
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, button_rect, restart_button_radius);
         }
 

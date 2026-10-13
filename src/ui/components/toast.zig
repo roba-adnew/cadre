@@ -109,8 +109,8 @@ pub const ToastComponent = struct {
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const bg_alpha = @min(alpha, notification_bg_max_alpha);
-        const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, bg_alpha);
+        const panel_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const border_alpha = @min(alpha, notification_border_max_alpha);

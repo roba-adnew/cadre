@@ -200,7 +200,8 @@ pub const QuitConfirmComponent = struct {
         const body_fonts = cache.get(self.body_font_size) catch return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 140);
+        const scrim_tint = host.theme.scrim(140);
+        _ = c.SDL_SetRenderDrawColor(renderer, scrim_tint.r, scrim_tint.g, scrim_tint.b, scrim_tint.a);
         const overlay = c.SDL_FRect{
             .x = 0,
             .y = 0,

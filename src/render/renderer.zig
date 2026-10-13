@@ -682,7 +682,7 @@ fn renderSessionContent(
             const display_row = message_row - active_row_offset;
             const message_x: c_int = origin_x;
             const message_y: c_int = origin_y + @as(c_int, @intCast(display_row)) * cell_height_actual;
-            const fg_color = c.SDL_Color{ .r = 92, .g = 99, .b = 112, .a = 255 };
+            const fg_color = theme.chromeTextDim();
 
             var offset_x = message_x;
             for (message) |ch| {
@@ -828,7 +828,7 @@ fn renderTerminalScrollbar(
         view.terminal_scrollbar.hideNow();
         return;
     };
-    scrollbar.render(renderer, layout, theme.accent, &view.terminal_scrollbar);
+    scrollbar.render(renderer, layout, theme, &view.terminal_scrollbar);
     view.terminal_scrollbar.markDrawn();
 }
 

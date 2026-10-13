@@ -334,7 +334,8 @@ pub const HiddenSwitcherComponent = struct {
 
         // Dim the scene behind the modal.
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 120);
+        const scrim_tint = theme.scrim(120);
+        _ = c.SDL_SetRenderDrawColor(renderer, scrim_tint.r, scrim_tint.g, scrim_tint.b, scrim_tint.a);
         _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
             .x = 0,
             .y = 0,
@@ -342,7 +343,8 @@ pub const HiddenSwitcherComponent = struct {
             .h = @floatFromInt(host.window_h),
         });
 
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, 245);
+        const panel_fill = theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 245);
         primitives.fillRoundedRect(renderer, modal, radius);
         _ = c.SDL_SetRenderDrawColor(renderer, theme.accent.r, theme.accent.g, theme.accent.b, 230);
         primitives.drawRoundedBorder(renderer, modal, radius);
@@ -459,7 +461,7 @@ test "collectHidden picks only spawned+hidden, preserving index order" {
 
 test "collectHidden filters by folder, case-insensitive" {
     var buf: [max_entries]usize = undefined;
-    const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "ARCH", &buf);
+    const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "CAD", &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqual(@as(usize, 1), buf[0]);
 

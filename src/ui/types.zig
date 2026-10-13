@@ -110,6 +110,9 @@ pub const UiAction = union(enum) {
     /// passthrough + text) stays owned by runtime, same as Cmd+V.
     PasteIntoFocused: void,
     ConfirmQuit: void,
+    /// Close the window that emitted it (confirm dialog accepted, or nothing
+    /// was running). The last window goes through ConfirmQuit instead.
+    CloseWindow: void,
     OpenConfig: void,
     SwitchWorktree: SwitchWorktreeAction,
     CreateWorktree: CreateWorktreeAction,
@@ -121,6 +124,10 @@ pub const UiAction = union(enum) {
     /// Emitted per re-slot (not once at release), so each move is validated
     /// against the live visible set and there is no stale permutation to hold.
     ReorderGridSessions: ReorderMove,
+    /// Detach the session at this index into a brand-new window (Cmd+Shift+M).
+    MoveSessionToNewWindow: usize,
+    /// Move the session at `idx` into the existing window `window_index`.
+    MoveSessionToWindow: MoveSessionAction,
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     ToggleReaderOverlay: void,
@@ -131,6 +138,11 @@ pub const UiAction = union(enum) {
 pub const ReorderMove = struct {
     from: usize,
     to: usize,
+};
+
+pub const MoveSessionAction = struct {
+    idx: usize,
+    window_index: usize,
 };
 
 pub const SwitchWorktreeAction = struct {

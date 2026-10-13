@@ -13,6 +13,10 @@ const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Focus selected pane" },
+    .{ .key = "⌘N", .desc = "New terminal" },
+    .{ .key = "⌘⇧N", .desc = "New window" },
+    .{ .key = "⌘⇧P", .desc = "Move terminal to a separate window" },
+    .{ .key = "⌘⇧W", .desc = "Close window" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
@@ -136,8 +140,8 @@ pub const HelpOverlayComponent = struct {
         const radius: c_int = 8;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, 245);
+        const panel_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 245);
         primitives.fillRoundedRect(renderer, rect, radius);
 
         const accent = host.theme.accent;
@@ -296,8 +300,8 @@ pub const HelpOverlayComponent = struct {
             return null;
         };
 
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
-        const desc_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
+        const key_color = theme.accent;
+        const desc_color = theme.chromeTextDim();
 
         var shortcut_tex: [shortcuts.len]ShortcutTex = undefined;
         for (shortcuts, 0..) |shortcut, idx| {

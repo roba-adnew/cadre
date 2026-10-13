@@ -73,10 +73,12 @@ pub const HiddenIndicatorComponent = struct {
 
         // Pill background + border, matching the help/recent-folders/worktree pills.
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, theme.selection.r, theme.selection.g, theme.selection.b, 245);
+        const panel_fill = theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 245);
         primitives.fillRoundedRect(renderer, rect, radius);
         if (self.hovered) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, rect, radius);
         }
         // Border adopts the "needs you" attention color (same palette slot as the

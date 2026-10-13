@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const geom = @import("../../geom.zig");
 const primitives = @import("../../gfx/primitives.zig");
 const easing = @import("../../anim/easing.zig");
@@ -292,15 +293,16 @@ fn offsetForThumbTop(layout: Layout, metrics: Metrics, thumb_top: f32) f32 {
 pub fn render(
     renderer: *c.SDL_Renderer,
     layout: Layout,
-    accent: c.SDL_Color,
+    theme: *const colors.Theme,
     state: *State,
 ) void {
     if (state.alpha <= 0.001) return;
+    const accent = theme.accent;
 
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
     const alpha = alphaScaled(255, state.alpha);
 
-    if (ensureTrackTexture(renderer, layout, state)) |track_tex| {
+    if (ensureTrackTexture(renderer, layout, theme, state)) |track_tex| {
         _ = c.SDL_SetTextureAlphaMod(track_tex, alpha);
         _ = c.SDL_RenderTexture(renderer, track_tex, null, &c.SDL_FRect{
             .x = @floatFromInt(layout.track_rect.x),
@@ -309,7 +311,7 @@ pub fn render(
             .h = @floatFromInt(layout.track_rect.h),
         });
     } else {
-        drawTrackToCurrentTarget(renderer, layout.track_rect);
+        drawTrackToCurrentTarget(renderer, layout.track_rect, theme);
     }
 
     const style: ThumbStyle = if (state.dragging)
@@ -335,6 +337,7 @@ pub fn render(
 fn ensureTrackTexture(
     renderer: *c.SDL_Renderer,
     layout: Layout,
+    theme: *const colors.Theme,
     state: *State,
 ) ?*c.SDL_Texture {
     const w = layout.track_rect.w;
@@ -357,7 +360,7 @@ fn ensureTrackTexture(
     _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
     _ = c.SDL_RenderClear(renderer);
     _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    drawTrackToCurrentTarget(renderer, .{ .x = 0, .y = 0, .w = w, .h = h });
+    drawTrackToCurrentTarget(renderer, .{ .x = 0, .y = 0, .w = w, .h = h }, theme);
 
     state.track_cache.texture = tex;
     state.track_cache.width = w;
@@ -408,59 +411,32 @@ fn ensureThumbTexture(
 fn drawTrackToCurrentTarget(
     renderer: *c.SDL_Renderer,
     track_rect: geom.Rect,
+    theme: *const colors.Theme,
 ) void {
     const track_radius = @max(1, @divFloor(track_rect.w, 2));
     const inner_track = insetRect(track_rect, 1);
     const groove_track = insetRect(track_rect, 2);
 
-    const track_outer_top = c.SDL_Color{
-        .r = 54,
-        .g = 62,
-        .b = 72,
-        .a = 125,
-    };
-    const track_outer_bottom = c.SDL_Color{
-        .r = 34,
-        .g = 41,
-        .b = 52,
-        .a = 145,
-    };
+    // Track = a groove cut into the theme's own surface levels, so it reads as
+    // part of the pane on both light and dark themes.
+    const outer = theme.surface(3);
+    const inner = theme.surface(2);
+    const groove = theme.surface(1);
+    const tint = theme.hoverOverlay();
+
+    const track_outer_top = c.SDL_Color{ .r = outer.r, .g = outer.g, .b = outer.b, .a = 125 };
+    const track_outer_bottom = c.SDL_Color{ .r = outer.r, .g = outer.g, .b = outer.b, .a = 145 };
     fillRoundedVerticalGradient(renderer, track_rect, track_radius, track_outer_top, track_outer_bottom);
 
-    const track_inner_top = c.SDL_Color{
-        .r = 244,
-        .g = 247,
-        .b = 251,
-        .a = 102,
-    };
-    const track_inner_bottom = c.SDL_Color{
-        .r = 212,
-        .g = 220,
-        .b = 230,
-        .a = 122,
-    };
+    const track_inner_top = c.SDL_Color{ .r = inner.r, .g = inner.g, .b = inner.b, .a = 102 };
+    const track_inner_bottom = c.SDL_Color{ .r = inner.r, .g = inner.g, .b = inner.b, .a = 122 };
     fillRoundedVerticalGradient(renderer, inner_track, @max(1, track_radius - 1), track_inner_top, track_inner_bottom);
 
-    const groove_top = c.SDL_Color{
-        .r = 255,
-        .g = 255,
-        .b = 255,
-        .a = 42,
-    };
-    const groove_bottom = c.SDL_Color{
-        .r = 221,
-        .g = 227,
-        .b = 236,
-        .a = 52,
-    };
+    const groove_top = c.SDL_Color{ .r = groove.r, .g = groove.g, .b = groove.b, .a = 42 };
+    const groove_bottom = c.SDL_Color{ .r = groove.r, .g = groove.g, .b = groove.b, .a = 52 };
     fillRoundedVerticalGradient(renderer, groove_track, @max(1, track_radius - 2), groove_top, groove_bottom);
 
-    const edge = c.SDL_Color{
-        .r = 255,
-        .g = 255,
-        .b = 255,
-        .a = 68,
-    };
+    const edge = c.SDL_Color{ .r = tint.r, .g = tint.g, .b = tint.b, .a = 68 };
     _ = c.SDL_SetRenderDrawColor(renderer, edge.r, edge.g, edge.b, edge.a);
     primitives.drawRoundedBorder(renderer, inner_track, @max(1, track_radius - 1));
 }

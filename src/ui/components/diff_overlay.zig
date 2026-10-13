@@ -1669,7 +1669,7 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderClipRect(renderer, null);
 
         if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
-            scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
+            scrollbar.render(renderer, layout, host.theme, &self.scrollbar_state);
             self.scrollbar_state.markDrawn();
         } else {
             self.scrollbar_state.hideNow();
@@ -3038,7 +3038,8 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
         // Background
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 44, 52, @intFromFloat(230.0 * alpha));
+        const box_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, box_fill.r, box_fill.g, box_fill.b, @intFromFloat(230.0 * alpha));
         _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
             .x = @floatFromInt(rect.x + 1),
             .y = @floatFromInt(y_pos),
@@ -3062,7 +3063,8 @@ pub const DiffOverlayComponent = struct {
 
         const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
         const input_radius = dpi.scale(4, host.ui_scale);
-        _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
+        const input_fill = host.theme.surface(1);
+        _ = c.SDL_SetRenderDrawColor(renderer, input_fill.r, input_fill.g, input_fill.b, @intFromFloat(255.0 * alpha));
         primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         // Input border
@@ -3108,7 +3110,8 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, 40, 167, 69, @intFromFloat(220.0 * alpha));
         primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         if (self.comment_submit_hovered) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = host.theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, .{ .x = submit_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         }
         const submit_tex = self.makeTextTexture(renderer, fonts.regular, "Submit", .{ .r = 255, .g = 255, .b = 255, .a = 255 }) catch return;
@@ -3129,7 +3132,8 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(80.0 * alpha));
         primitives.drawRoundedBorder(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         if (self.comment_cancel_hovered) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = host.theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, .{ .x = cancel_x, .y = btn_y, .w = btn_w, .h = btn_h }, btn_radius);
         }
         const cancel_tex = self.makeTextTexture(renderer, fonts.regular, "Cancel", host.theme.foreground) catch return;
@@ -3159,7 +3163,8 @@ pub const DiffOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
 
         // Background
-        _ = c.SDL_SetRenderDrawColor(renderer, 40, 44, 52, @intFromFloat(230.0 * alpha));
+        const box_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, box_fill.r, box_fill.g, box_fill.b, @intFromFloat(230.0 * alpha));
         _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
             .x = @floatFromInt(rect.x + 1),
             .y = @floatFromInt(y_pos),
@@ -3194,7 +3199,8 @@ pub const DiffOverlayComponent = struct {
 
         const input_rect = geom.Rect{ .x = input_x, .y = input_y, .w = input_w, .h = input_h };
         const input_radius = dpi.scale(4, host.ui_scale);
-        _ = c.SDL_SetRenderDrawColor(renderer, 30, 33, 40, @intFromFloat(255.0 * alpha));
+        const input_fill = host.theme.surface(1);
+        _ = c.SDL_SetRenderDrawColor(renderer, input_fill.r, input_fill.g, input_fill.b, @intFromFloat(255.0 * alpha));
         primitives.fillRoundedRect(renderer, input_rect, input_radius);
 
         const accent = host.theme.accent;

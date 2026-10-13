@@ -123,7 +123,8 @@ pub const EscapeHoldComponent = struct {
             const layer_radius = backdrop_radius * (1.0 - layer_progress);
             const alpha: u8 = @intFromFloat(180.0 * layer_progress);
 
-            const base_color = c.SDL_FColor{ .r = 27.0 / 255.0, .g = 34.0 / 255.0, .b = 48.0 / 255.0, .a = @as(f32, @floatFromInt(alpha)) / 255.0 };
+            const pill = host.theme.surface(2);
+            const base_color = c.SDL_FColor{ .r = @as(f32, @floatFromInt(pill.r)) / 255.0, .g = @as(f32, @floatFromInt(pill.g)) / 255.0, .b = @as(f32, @floatFromInt(pill.b)) / 255.0, .a = @as(f32, @floatFromInt(alpha)) / 255.0 };
 
             var seg: usize = 0;
             while (seg < backdrop_segments) : (seg += 1) {
@@ -146,7 +147,7 @@ pub const EscapeHoldComponent = struct {
         }
 
         const esc_text = "Esc";
-        const text_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = 255 };
+        const text_color = host.theme.chromeText();
 
         const text_width = self.font.cell_width * @as(c_int, @intCast(esc_text.len));
         const text_height = self.font.cell_height;
@@ -185,7 +186,7 @@ pub const EscapeHoldComponent = struct {
         while (arc < esc_arc_count) : (arc += 1) {
             const is_completed = arc < completed_arcs;
             var color = if (is_completed)
-                c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 } // bright blue accent
+                host.theme.accent // theme accent
             else
                 c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 }; // warm gold pending
 
