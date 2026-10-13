@@ -2572,7 +2572,15 @@ const Window = struct {
         const max_spawned_idx = highestVisibleIndex(sessions);
         const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
-        if (remaining_count == 0) {
+        if (remaining_count == 0 and app.windows.items.len > 1 and countSpawnedSessions(sessions) == 0) {
+            // Nothing left in this window (not even hidden) and other windows
+            // exist: leave it empty so the caller closes it instead of
+            // respawning a shell nobody asked for (drag-out / move-out path).
+            self.anim_state.focused_session = 0;
+            self.grid.cols = 1;
+            self.grid.rows = 1;
+            self.anim_state.mode = .Full;
+        } else if (remaining_count == 0) {
             // Re-spawn a fresh terminal in slot 0
             sessions[0].ensureSpawnedWithLoop(&app.loop) catch |err| {
                 std.debug.print("Failed to respawn terminal: {}\n", .{err});
