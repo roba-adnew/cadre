@@ -330,28 +330,33 @@ fn claimPersistIndex(sessions: []const *SessionState, slot: usize, want: usize) 
     sessions[slot].persist_index = want;
 }
 
-fn terminalEntriesMatchSessions(
+/// One terminal list for every window: `groups[k]` is window k's slots, so
+/// entries are grouped by window and ordered by slot within each window.
+fn terminalEntriesMatchSlices(
     persistence: *const config_mod.Persistence,
-    sessions: []const *SessionState,
+    groups: []const []const *SessionState,
 ) bool {
     var entry_idx: usize = 0;
-    for (sessions) |session| {
-        if (!session.spawned or session.dead) continue;
-        const path = session.cwd_path orelse continue;
-        if (path.len == 0) continue;
+    for (groups, 0..) |sessions, window_index| {
+        for (sessions) |session| {
+            if (!session.spawned or session.dead) continue;
+            const path = session.cwd_path orelse continue;
+            if (path.len == 0) continue;
 
-        if (entry_idx >= persistence.terminal_entries.items.len) return false;
-        const entry = persistence.terminal_entries.items[entry_idx];
-        const agent_type = persistedAgentType(session);
-        const agent_session_id = persistedAgentSessionId(session, agent_type);
+            if (entry_idx >= persistence.terminal_entries.items.len) return false;
+            const entry = persistence.terminal_entries.items[entry_idx];
+            const agent_type = persistedAgentType(session);
+            const agent_session_id = persistedAgentSessionId(session, agent_type);
 
-        if (!std.mem.eql(u8, entry.path, path)) return false;
-        if (entry.hidden != session.hidden) return false;
-        if (entry.persist_index != session.persist_index) return false;
-        if (!optionalStringEql(entry.agent_type, agent_type)) return false;
-        if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
+            if (!std.mem.eql(u8, entry.path, path)) return false;
+            if (entry.hidden != session.hidden) return false;
+            if (entry.persist_index != session.persist_index) return false;
+            if (entry.window_index != window_index) return false;
+            if (!optionalStringEql(entry.agent_type, agent_type)) return false;
+            if (!optionalStringEql(entry.agent_session_id, agent_session_id)) return false;
 
-        entry_idx += 1;
+            entry_idx += 1;
+        }
     }
     return entry_idx == persistence.terminal_entries.items.len;
 }
@@ -361,17 +366,27 @@ fn syncPersistenceTerminalEntriesFromSessions(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
 ) !bool {
-    if (terminalEntriesMatchSessions(persistence, sessions)) return false;
+    return syncPersistenceTerminalEntriesFromSlices(persistence, &[_][]const *SessionState{sessions}, allocator);
+}
+
+fn syncPersistenceTerminalEntriesFromSlices(
+    persistence: *config_mod.Persistence,
+    groups: []const []const *SessionState,
+    allocator: std.mem.Allocator,
+) !bool {
+    if (terminalEntriesMatchSlices(persistence, groups)) return false;
 
     persistence.clearTerminalEntries(allocator);
-    for (sessions) |session| {
-        if (!session.spawned or session.dead) continue;
-        const path = session.cwd_path orelse continue;
-        if (path.len == 0) continue;
+    for (groups, 0..) |sessions, window_index| {
+        for (sessions) |session| {
+            if (!session.spawned or session.dead) continue;
+            const path = session.cwd_path orelse continue;
+            if (path.len == 0) continue;
 
-        const agent_type = persistedAgentType(session);
-        const agent_session_id = persistedAgentSessionId(session, agent_type);
-        try persistence.appendTerminalEntry(allocator, path, agent_type, agent_session_id, session.hidden, session.persist_index);
+            const agent_type = persistedAgentType(session);
+            const agent_session_id = persistedAgentSessionId(session, agent_type);
+            try persistence.appendTerminalEntryInWindow(allocator, path, agent_type, agent_session_id, session.hidden, session.persist_index, window_index);
+        }
     }
     return true;
 }
@@ -919,7 +934,7 @@ const quit_capture_drain_quiet_ns: i128 = 250 * @as(i128, std.time.ns_per_ms);
 const quit_capture_drain_max_ns: i128 = 2500 * @as(i128, std.time.ns_per_ms);
 
 const QuitTeardownTask = struct {
-    session_idx: usize,
+    session: *SessionState,
     shell_pid: posix.pid_t,
     pty_master: posix.fd_t,
     agent_kind: session_state.AgentKind,
@@ -933,19 +948,19 @@ const QuitTeardownTask = struct {
 
 const QuitTeardownWorker = struct {
     tasks: []QuitTeardownTask,
+    threads: []?std.Thread,
     done: *std.atomic.Value(bool),
 
     fn run(self: *QuitTeardownWorker) void {
         defer self.done.store(true, .seq_cst);
-        var threads: [grid_layout.max_terminals]?std.Thread = [_]?std.Thread{null} ** grid_layout.max_terminals;
-        for (self.tasks, 0..) |*task, idx| {
-            threads[idx] = std.Thread.spawn(.{}, runTask, .{task}) catch |err| blk: {
-                log.warn("quit teardown: failed to spawn parallel task for session {d}: {}", .{ task.session_idx, err });
+        for (self.threads, self.tasks) |*slot, *task| {
+            slot.* = std.Thread.spawn(.{}, runTask, .{task}) catch |err| blk: {
+                log.warn("quit teardown: failed to spawn parallel task for session {d}: {}", .{ task.session.slot_index, err });
                 runTask(task);
                 break :blk null;
             };
         }
-        for (threads[0..self.tasks.len]) |thread_opt| {
+        for (self.threads) |thread_opt| {
             if (thread_opt) |thread| {
                 thread.join();
             }
@@ -953,47 +968,49 @@ const QuitTeardownWorker = struct {
     }
 
     fn runTask(task: *QuitTeardownTask) void {
-        log.info("quit teardown: session {d} has foreground agent {s}", .{ task.session_idx, task.agent_kind.name() });
+        log.info("quit teardown: session {d} has foreground agent {s}", .{ task.session.slot_index, task.agent_kind.name() });
         sendExitSequence(task.pty_master, task.agent_kind);
         std.Thread.sleep(quit_primary_wait_ms * std.time.ns_per_ms);
 
         var fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         if (fg_pgrp != null) {
-            log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ task.session_idx, task.agent_kind.name() });
+            log.debug("quit teardown: session {d} agent {s} still foreground after primary quit, retrying with interrupt", .{ task.session.slot_index, task.agent_kind.name() });
             sendExitSequence(task.pty_master, task.agent_kind);
             std.Thread.sleep(quit_retry_wait_ms * std.time.ns_per_ms);
             fg_pgrp = foregroundPgrp(task.slavePathZ(), task.shell_pid);
         }
 
         if (fg_pgrp) |pgrp| {
-            log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ task.session_idx, task.agent_kind.name() });
+            log.debug("quit teardown: session {d} agent {s} did not exit gracefully, sending SIGTERM", .{ task.session.slot_index, task.agent_kind.name() });
             _ = std.c.kill(-pgrp, std.c.SIG.TERM);
             std.Thread.sleep(quit_term_wait_ms * std.time.ns_per_ms);
         } else {
-            log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ task.session_idx, task.agent_kind.name() });
+            log.debug("quit teardown: session {d} agent {s} exited gracefully", .{ task.session.slot_index, task.agent_kind.name() });
         }
     }
 };
 
 const QuitTeardownState = struct {
     active: bool = false,
-    task_count: usize = 0,
-    tasks: [grid_layout.max_terminals]QuitTeardownTask = undefined,
+    /// Heap-allocated: one task per session with a foreground agent, across
+    /// every window (each task carries a PATH_MAX buffer).
+    tasks: std.ArrayListUnmanaged(QuitTeardownTask) = .{},
+    threads: std.ArrayListUnmanaged(?std.Thread) = .{},
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     worker: QuitTeardownWorker = undefined,
     thread: ?std.Thread = null,
 
-    fn start(self: *QuitTeardownState, sessions: []*SessionState) !bool {
+    fn start(self: *QuitTeardownState, allocator: std.mem.Allocator, sessions: []const *SessionState) !bool {
         if (self.active) return true;
 
-        self.task_count = 0;
-        for (sessions, 0..) |session, idx| {
+        self.tasks.clearRetainingCapacity();
+        for (sessions) |session| {
             const agent_kind = session.detectForegroundAgent() orelse continue;
             const shell_pid = session.shellPid() orelse continue;
             const pty_master = session.ptyMasterFd() orelse continue;
 
             var task = QuitTeardownTask{
-                .session_idx = idx,
+                .session = session,
                 .shell_pid = shell_pid,
                 .pty_master = pty_master,
                 .agent_kind = agent_kind,
@@ -1002,20 +1019,28 @@ const QuitTeardownState = struct {
             task.slave_path_len = copied_path.len;
 
             session.startQuitCapture();
-            self.tasks[self.task_count] = task;
-            self.task_count += 1;
+            try self.tasks.append(allocator, task);
         }
 
-        if (self.task_count == 0) return false;
+        if (self.tasks.items.len == 0) return false;
 
+        try self.threads.resize(allocator, self.tasks.items.len);
+        @memset(self.threads.items, null);
         self.done.store(false, .seq_cst);
         self.worker = .{
-            .tasks = self.tasks[0..self.task_count],
+            .tasks = self.tasks.items,
+            .threads = self.threads.items,
             .done = &self.done,
         };
         self.thread = try std.Thread.spawn(.{}, workerMain, .{&self.worker});
         self.active = true;
         return true;
+    }
+
+    fn deinit(self: *QuitTeardownState, allocator: std.mem.Allocator) void {
+        self.join();
+        self.tasks.deinit(allocator);
+        self.threads.deinit(allocator);
     }
 
     fn isFinished(self: *const QuitTeardownState) bool {
@@ -1059,12 +1084,16 @@ fn foregroundPgrp(slave_path_z: [:0]const u8, shell_pid: posix.pid_t) ?posix.pid
     return fg_pgrp;
 }
 
-fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *SessionState) void {
+fn drainQuitCaptureOutput(allocator: std.mem.Allocator, tasks: []const QuitTeardownTask) void {
     if (tasks.len == 0) return;
 
-    var last_capture_lengths: [grid_layout.max_terminals]usize = [_]usize{0} ** grid_layout.max_terminals;
+    const last_capture_lengths = allocator.alloc(usize, tasks.len) catch |err| {
+        log.warn("quit teardown: failed to allocate capture tracking: {}", .{err});
+        return;
+    };
+    defer allocator.free(last_capture_lengths);
     for (tasks, 0..) |task, idx| {
-        last_capture_lengths[idx] = sessions[task.session_idx].quitCaptureBytes().len;
+        last_capture_lengths[idx] = task.session.quitCaptureBytes().len;
     }
 
     const start_ns = std.time.nanoTimestamp();
@@ -1073,9 +1102,9 @@ fn drainQuitCaptureOutput(tasks: []const QuitTeardownTask, sessions: []const *Se
     while (true) {
         var saw_growth = false;
         for (tasks, 0..) |task, idx| {
-            const session = sessions[task.session_idx];
+            const session = task.session;
             session.processOutput() catch |err| {
-                log.warn("quit teardown: session {d} post-worker output drain failed: {}", .{ task.session_idx, err });
+                log.warn("quit teardown: session {d} post-worker output drain failed: {}", .{ session.slot_index, err });
             };
             const new_len = session.quitCaptureBytes().len;
             if (new_len > last_capture_lengths[idx]) {
@@ -1140,7 +1169,348 @@ const App = struct {
     persistence_dirty: bool,
     quit_teardown: QuitTeardownState,
     next_frame_wait: FrameWaitDecision,
+    /// Open windows in display order; parallel to `persistence.windows`.
+    windows: std.ArrayListUnmanaged(*Window),
+    /// Every SessionState ever allocated, in persist-index order. Owned here
+    /// and freed only at exit: an armed xev exit watcher keeps a raw pointer
+    /// to its session, so a closed window must not free its sessions.
+    pool: std.ArrayListUnmanaged(*SessionState),
+    /// Window that most recently gained focus: target for QUIT, control
+    /// spawns, story overlays and windowless events.
+    last_focused: ?*Window,
+    /// Cmd+Shift+N request, fulfilled after the event drain.
+    pending_new_window: ?NewWindowRequest,
+    /// Window to tear down at the end of this frame.
+    closing_window: ?*Window,
+
+    fn focusedWindow(self: *App) *Window {
+        return self.last_focused orelse self.windows.items[0];
+    }
+
+    fn anyWindowFocused(self: *const App) bool {
+        for (self.windows.items) |w| {
+            if (w.window_focused) return true;
+        }
+        return false;
+    }
+
+    fn windowIndex(self: *const App, window: *const Window) usize {
+        for (self.windows.items, 0..) |w, i| {
+            if (w == window) return i;
+        }
+        return 0;
+    }
+
+    fn windowById(self: *const App, id: c.SDL_WindowID) ?*Window {
+        for (self.windows.items) |w| {
+            if (w.window_id == id) return w;
+        }
+        return null;
+    }
+
+    const SessionRef = struct { window: *Window, idx: usize };
+
+    /// Locate a session by its persist index (the CADRE_SESSION_ID hooks send).
+    fn findSession(self: *const App, persist_index: usize) ?SessionRef {
+        for (self.windows.items) |w| {
+            if (findSessionIndexById(w.sessions, persist_index)) |idx| {
+                return .{ .window = w, .idx = idx };
+            }
+        }
+        return null;
+    }
+
+    /// Allocate a pool-owned session for grid slot `slot` with a pool-unique
+    /// persist index (window 0 therefore keeps today's 0..max_terminals-1).
+    fn allocSession(self: *App, slot: usize, size: pty_mod.winsize) !*SessionState {
+        const session = try self.allocator.create(SessionState);
+        errdefer self.allocator.destroy(session);
+        session.* = try SessionState.init(self.allocator, slot, self.shell_path, size, self.notify_sock, self.theme);
+        session.persist_index = self.pool.items.len;
+        try self.pool.append(self.allocator, session);
+        return session;
+    }
+
+    /// Give `target` the persist index `want`, swapping with whichever
+    /// not-yet-spawned pool session currently holds it (pool-wide version of
+    /// claimPersistIndex, so two windows can never share a tmux name).
+    fn claimPersistIndexInPool(self: *App, target: *SessionState, want: usize) void {
+        if (target.persist_index == want) return;
+        for (self.pool.items) |other| {
+            if (other.persist_index != want) continue;
+            if (other.spawned) {
+                log.warn("persist index {d} already in use by a live session; slot {d} keeps {d}", .{ want, target.slot_index, target.persist_index });
+                return;
+            }
+            other.persist_index = target.persist_index;
+            target.persist_index = want;
+            return;
+        }
+        target.persist_index = want;
+    }
+
+    fn countForegroundProcessesAll(self: *const App) usize {
+        var total: usize = 0;
+        for (self.windows.items) |w| total += countForegroundProcesses(w.sessions);
+        return total;
+    }
+
+    /// Only the focused window keeps vsync: N vsynced presents per frame would
+    /// each wait for a display refresh.
+    fn applyVsyncFocus(self: *App, focused: *Window) void {
+        if (!self.config.rendering.vsync) return;
+        for (self.windows.items) |w| {
+            platform.setVSync(&w.pw, w == focused);
+        }
+    }
+
+    fn refreshRecentFolders(self: *App) void {
+        for (self.windows.items) |w| {
+            w.recent_folders_comp_ptr.setFolders(self.persistence.getRecentFolders());
+        }
+    }
+
+    fn syncPersistenceFromWindows(self: *App) !bool {
+        var groups: [max_windows][]const *SessionState = undefined;
+        const n = @min(self.windows.items.len, max_windows);
+        for (self.windows.items[0..n], 0..) |w, i| groups[i] = w.sessions;
+        return syncPersistenceTerminalEntriesFromSlices(&self.persistence, groups[0..n], self.allocator);
+    }
+
+    /// Mirror each window's focus/zoom into its persistence entry (2c).
+    fn syncWindowViewState(self: *App) void {
+        for (self.windows.items, 0..) |w, i| {
+            if (i >= self.persistence.windows.items.len) break;
+            const entry = &self.persistence.windows.items[i];
+            const cur_zoomed = w.anim_state.mode == .Full;
+            if (entry.focused_session != w.anim_state.focused_session or entry.zoomed != cur_zoomed) {
+                entry.focused_session = w.anim_state.focused_session;
+                entry.zoomed = cur_zoomed;
+                self.persistence_dirty = true;
+            }
+        }
+    }
+
+    /// Route one SDL event: app-level events are handled here, window events
+    /// go to the window they name (dropped when it is gone), and windowless
+    /// events go to the focused window.
+    fn dispatchEvent(self: *App, event: *c.SDL_Event, now: i64) !void {
+        switch (event.type) {
+            c.SDL_EVENT_KEYMAP_CHANGED => {
+                if (builtin.os.tag == .macos) {
+                    self.input_source_tracker.capture() catch |err| {
+                        log.warn("Failed to capture input source: {}", .{err});
+                    };
+                }
+                return;
+            },
+            c.SDL_EVENT_WINDOW_DESTROYED => {
+                // Our own closes are unregistered before SDL reports them; a
+                // still-registered window here was destroyed under us.
+                if (self.windowById(event.window.windowID)) |w| {
+                    log.warn("window {d} destroyed outside the close path", .{w.window_id});
+                }
+                return;
+            },
+            c.SDL_EVENT_QUIT => return self.focusedWindow().handleEvent(event, now),
+            else => {},
+        }
+        if (eventWindowId(event)) |id| {
+            const w = self.windowById(id) orelse return;
+            return w.handleEvent(event, now);
+        }
+        return self.focusedWindow().handleEvent(event, now);
+    }
+
+    fn handleControlSpawn(self: *App, pending: *control.PendingSpawn, now: i64) void {
+        self.focusedWindow().handleExternalSpawnRequest(pending, now);
+    }
+
+    fn handleControlClose(self: *App, pending: *control.PendingClose, now: i64) void {
+        if (pending.request.session_id) |session_id| {
+            if (self.findSession(session_id)) |ref| {
+                ref.window.handleExternalCloseRequest(pending, now);
+                return;
+            }
+            pending.completion.complete(.{ .failure = .{
+                .code = .not_found,
+                .message = "no Cadre session matches the requested identifier",
+            } });
+            return;
+        }
+        self.focusedWindow().handleExternalCloseRequest(pending, now);
+    }
+
+    /// Route an external notification to the window owning the session.
+    /// Returns true when a fresh agent session id was captured.
+    fn applyNotification(self: *App, note: notify.Notification, now: i64) bool {
+        const allocator = self.allocator;
+        switch (note) {
+            .status => |st| {
+                const ref = self.findSession(st.session) orelse return false;
+                return ref.window.applyNotification(note, now);
+            },
+            .story => |st| {
+                const target = if (self.findSession(st.session)) |ref| ref.window else self.focusedWindow();
+                return target.applyNotification(note, now);
+            },
+            .agent_session => |ag| {
+                const ref = self.findSession(ag.session) orelse {
+                    allocator.free(ag.agent);
+                    allocator.free(ag.session_id);
+                    return false;
+                };
+                return ref.window.applyNotification(note, now);
+            },
+        }
+    }
+
+    fn requestNewWindow(self: *App, from: *Window) void {
+        const allocator = self.allocator;
+        if (self.pending_new_window != null) return;
+        if (self.windows.items.len >= max_windows) {
+            from.ui.showToast("Window limit reached", std.time.milliTimestamp());
+            return;
+        }
+        const focused = from.sessions[from.anim_state.focused_session];
+        const cwd: ?[]u8 = if (focused.cwd_path) |path| allocator.dupe(u8, path) catch |err| blk: {
+            log.warn("failed to copy cwd for new window: {}", .{err});
+            break :blk null;
+        } else null;
+        self.pending_new_window = .{
+            .width = from.window_width_points,
+            .height = from.window_height_points,
+            .x = if (from.window_x >= 0) from.window_x + new_window_offset_points else -1,
+            .y = if (from.window_y >= 0) from.window_y + new_window_offset_points else -1,
+            .cwd = cwd,
+        };
+    }
+
+    fn createWindowFromRequest(self: *App) void {
+        const allocator = self.allocator;
+        const req = self.pending_new_window orelse return;
+        self.pending_new_window = null;
+        defer if (req.cwd) |cwd| allocator.free(cwd);
+        const geometry = config_mod.WindowConfig{ .width = req.width, .height = req.height, .x = req.x, .y = req.y };
+        const window = Window.create(self, &[_]config_mod.Persistence.TerminalEntry{}, geometry, 0, false, req.cwd) catch |err| {
+            log.err("failed to open a new window: {}", .{err});
+            self.focusedWindow().ui.showToast("Could not open window", std.time.milliTimestamp());
+            return;
+        };
+        self.windows.append(allocator, window) catch |err| {
+            log.err("failed to register new window: {}", .{err});
+            window.destroy();
+            return;
+        };
+        self.persistence.windows.append(allocator, .{ .window = geometry }) catch |err| {
+            log.warn("failed to persist new window entry: {}", .{err});
+        };
+        self.persistence_dirty = true;
+        _ = c.SDL_RaiseWindow(window.pw.window);
+        log.info("opened window {d} (total {d})", .{ window.window_id, self.windows.items.len });
+    }
+
+    /// Tear down the window marked for closing. Its terminals are discarded
+    /// (tmux sessions killed) like Cmd+W; the last window quits instead.
+    fn finishClosingWindow(self: *App) void {
+        const allocator = self.allocator;
+        const window = self.closing_window orelse return;
+        self.closing_window = null;
+        if (self.windows.items.len <= 1) {
+            if (window.handleQuitRequest()) {
+                if (window.startQuitFlow()) self.running = false;
+            }
+            return;
+        }
+        for (window.sessions) |session| {
+            if (session.spawned) session.despawn(allocator);
+        }
+        const idx = self.windowIndex(window);
+        _ = self.windows.orderedRemove(idx);
+        if (idx < self.persistence.windows.items.len) _ = self.persistence.windows.orderedRemove(idx);
+        self.persistence_dirty = true;
+        if (self.last_focused == window) self.last_focused = self.windows.items[0];
+        log.info("closed window {d} (remaining {d})", .{ window.window_id, self.windows.items.len });
+        window.destroy();
+        self.applyVsyncFocus(self.focusedWindow());
+    }
+
+    /// After the loop exits: refresh cwds, finish the quit teardown and scrape
+    /// agent ids, then sync the terminal entries one last time.
+    fn finalizeOnExit(self: *App) void {
+        const allocator = self.allocator;
+        if (builtin.os.tag != .macos) return;
+        const now = std.time.milliTimestamp();
+        for (self.windows.items) |w| {
+            for (w.sessions) |session| session.updateCwd(now);
+        }
+
+        if (self.quit_teardown.active) {
+            for (self.windows.items) |w| w.quit_blocking_overlay_component.setActive(false);
+            self.quit_teardown.join();
+            drainQuitCaptureOutput(allocator, self.quit_teardown.tasks.items);
+            for (self.quit_teardown.tasks.items) |task| {
+                const session = task.session;
+                session.stopQuitCapture();
+                const text = session.quitCaptureBytes();
+                log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ session.slot_index, text.len });
+                if (terminal_history.extractLastUuid(text)) |uuid| {
+                    // Scrape succeeded: overwrite with the freshest id from the farewell banner.
+                    // Dup first so a failed alloc keeps the existing (hook-captured) id intact.
+                    if (allocator.dupe(u8, uuid)) |new_id| {
+                        if (session.agent_session_id) |sid| allocator.free(sid);
+                        session.agent_session_id = new_id;
+                        session.agent_kind = task.agent_kind;
+                        session.agent_metadata_captured = true;
+                        log.info("quit teardown: session {d} captured session id: {s}", .{ session.slot_index, uuid });
+                    } else |err| {
+                        log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ session.slot_index, err });
+                    }
+                } else {
+                    // Scrape failed: KEEP whatever the SessionStart hook captured this run instead
+                    // of wiping it. The live hook is the reliable source of the resume id; the quit
+                    // scrape is only a best-effort fallback for agents without the hook.
+                    log.warn("quit teardown: session {d} agent {s} exited; no id in farewell output, keeping live-captured id (captured={})", .{ session.slot_index, task.agent_kind.name(), session.agent_metadata_captured });
+                }
+            }
+        }
+
+        _ = self.syncPersistenceFromWindows() catch |err| {
+            std.debug.print("Failed to refresh terminal persistence: {}\n", .{err});
+        };
+    }
 };
+
+/// Upper bound on simultaneously open windows (sizes the per-frame slice
+/// scratch; the session pool itself grows on demand).
+pub const max_windows: usize = 8;
+/// Cascade offset for a window opened with Cmd+Shift+N, in points.
+const new_window_offset_points: c_int = 40;
+
+const NewWindowRequest = struct {
+    width: c_int,
+    height: c_int,
+    x: c_int,
+    y: c_int,
+    cwd: ?[]u8,
+};
+
+/// The window an SDL event names, or null for windowless events (QUIT,
+/// keymap/clipboard changes), which go to the focused window.
+fn eventWindowId(event: *const c.SDL_Event) ?c.SDL_WindowID {
+    const t = event.type;
+    if (t >= c.SDL_EVENT_WINDOW_FIRST and t <= c.SDL_EVENT_WINDOW_LAST) return event.window.windowID;
+    return switch (t) {
+        c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => event.key.windowID,
+        c.SDL_EVENT_TEXT_EDITING => event.edit.windowID,
+        c.SDL_EVENT_TEXT_INPUT => event.text.windowID,
+        c.SDL_EVENT_MOUSE_MOTION => event.motion.windowID,
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => event.button.windowID,
+        c.SDL_EVENT_MOUSE_WHEEL => event.wheel.windowID,
+        c.SDL_EVENT_DROP_BEGIN, c.SDL_EVENT_DROP_FILE, c.SDL_EVENT_DROP_TEXT, c.SDL_EVENT_DROP_COMPLETE, c.SDL_EVENT_DROP_POSITION => event.drop.windowID,
+        else => null,
+    };
+}
 
 /// One SDL window: its renderer, the fonts and textures bound to that renderer,
 /// the grid of sessions it shows, and the UI overlay root. Heap-allocated and
@@ -1185,9 +1555,9 @@ const Window = struct {
     full_rows: u16,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
-    sessions_storage: []SessionState,
+    /// Grid slots: pool-owned sessions (see App.pool), never freed here.
     sessions: []*SessionState,
-    init_count: usize,
+    window_id: c.SDL_WindowID,
     session_ui_info: []ui_mod.SessionUiInfo,
     render_cache: renderer_mod.RenderCache,
     foreground_cache: ForegroundProcessCache,
@@ -1219,7 +1589,14 @@ const Window = struct {
 
     /// Order: SDL window -> renderer -> fonts -> sizes -> sessions -> restore ->
     /// caches -> UI. Mirrors the pre-extraction init sequence of run().
-    fn create(app: *App, restored_slice: []const config_mod.Persistence.TerminalEntry) !*Window {
+    fn create(
+        app: *App,
+        restored_slice: []const config_mod.Persistence.TerminalEntry,
+        geometry: config_mod.WindowConfig,
+        focused_session: usize,
+        zoomed: bool,
+        initial_cwd: ?[]const u8,
+    ) !*Window {
         const allocator = app.allocator;
         const persistence = &app.persistence;
         const self = try allocator.create(Window);
@@ -1246,19 +1623,20 @@ const Window = struct {
         self.grid.cols = initial_dims.cols;
         self.grid.rows = initial_dims.rows;
 
-        const window_pos = if (persistence.window.x >= 0 and persistence.window.y >= 0)
-            platform.WindowPosition{ .x = persistence.window.x, .y = persistence.window.y }
+        const window_pos = if (geometry.x >= 0 and geometry.y >= 0)
+            platform.WindowPosition{ .x = geometry.x, .y = geometry.y }
         else
             null;
 
         self.pw = try platform.initWindow(
             app_name,
-            persistence.window.width,
-            persistence.window.height,
+            geometry.width,
+            geometry.height,
             window_pos,
             app.config.rendering.vsync,
         );
         errdefer platform.deinitWindow(&self.pw);
+        self.window_id = platform.windowId(&self.pw);
         macos_titlebar.style(self.pw.window, app_name, app.theme.background.r, app.theme.background.g, app.theme.background.b);
         platform.startTextInput(self.pw.window);
         errdefer platform.stopTextInput(self.pw.window);
@@ -1291,8 +1669,8 @@ const Window = struct {
         self.ui_font = try initSharedFont(allocator, self.pw.renderer, &app.ui_font_cache, layout.scaledFontSize(ui_font_size, self.ui_scale));
         errdefer self.ui_font.deinit();
 
-        self.window_x = persistence.window.x;
-        self.window_y = persistence.window.y;
+        self.window_x = geometry.x;
+        self.window_y = geometry.y;
 
         const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
         const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, self.render_height, self.ui_scale, self.grid.rows);
@@ -1319,18 +1697,10 @@ const Window = struct {
             .ws_ypixel = @intCast(usable_height),
         };
 
-        // Allocate max possible sessions to avoid reallocation
-        self.sessions_storage = try allocator.alloc(SessionState, grid_layout.max_terminals);
-        errdefer allocator.free(self.sessions_storage);
+        // Grid slots point at pool-owned sessions (App.pool keeps them alive
+        // until exit) with pool-unique persist indices.
         self.sessions = try allocator.alloc(*SessionState, grid_layout.max_terminals);
         errdefer allocator.free(self.sessions);
-        self.init_count = 0;
-        errdefer {
-            var i: usize = 0;
-            while (i < self.init_count) : (i += 1) {
-                self.sessions_storage[i].deinit(allocator);
-            }
-        }
 
         // UI root is torn down before the sessions it references (errdefer
         // order), matching destroy().
@@ -1340,11 +1710,8 @@ const Window = struct {
         self.ui.assets.font_cache = &app.ui_font_cache;
 
         const sessions = self.sessions;
-        // Initialize all session slots
         for (0..grid_layout.max_terminals) |i| {
-            self.sessions_storage[i] = try SessionState.init(allocator, i, app.shell_path, size, app.notify_sock, app.theme);
-            sessions[i] = &self.sessions_storage[i];
-            self.init_count += 1;
+            sessions[i] = try app.allocSession(i, size);
         }
 
         // Restore persisted terminals
@@ -1363,7 +1730,7 @@ const Window = struct {
                 // Restoring by grid position instead orphaned any terminal whose
                 // persist index had drifted from its position, and the reaper
                 // below then killed the orphan (agent and all).
-                if (entry.persist_index) |want| claimPersistIndex(sessions, new_idx, want);
+                if (entry.persist_index) |want| app.claimPersistIndexInPool(sessions[new_idx], want);
 
                 // An id can appear on multiple entries (from a stale-hook smear);
                 // resuming it twice would fork one conversation into two
@@ -1406,10 +1773,19 @@ const Window = struct {
             }
         }
 
-        // Always spawn at least the first terminal
-        try sessions[0].ensureSpawnedWithLoop(&app.loop);
-
-        self.init_count = sessions.len;
+        // Always spawn at least the first terminal; a window opened from a
+        // terminal starts in that terminal's directory.
+        if (initial_cwd) |cwd| {
+            const cwd_buf = try allocZ(allocator, cwd);
+            defer allocator.free(cwd_buf);
+            const cwd_z: [:0]const u8 = cwd_buf[0..cwd.len :0];
+            sessions[0].ensureSpawnedFresh(cwd_z, &app.loop) catch |err| {
+                log.warn("failed to spawn in {s}: {}; falling back to the default directory", .{ cwd, err });
+                try sessions[0].ensureSpawnedWithLoop(&app.loop);
+            };
+        } else {
+            try sessions[0].ensureSpawnedWithLoop(&app.loop);
+        }
 
         self.session_ui_info = try allocator.alloc(ui_mod.SessionUiInfo, grid_layout.max_terminals);
         errdefer allocator.free(self.session_ui_info);
@@ -1422,11 +1798,11 @@ const Window = struct {
         // Restore focus + zoom from persistence (2c): clamp the focused pane to the restored
         // count, and only honor zoom when there is a pane to zoom into. The renderer computes
         // the Full rect from the window each frame, so setting .Full directly is sufficient.
-        const restored_focus: usize = if (persistence.focused_session < initial_terminal_count)
-            persistence.focused_session
+        const restored_focus: usize = if (focused_session < initial_terminal_count)
+            focused_session
         else
             0;
-        const initial_mode: app_state.ViewMode = if (persistence.zoomed and initial_terminal_count >= 1)
+        const initial_mode: app_state.ViewMode = if (zoomed and initial_terminal_count >= 1)
             .Full
         else
             initial_view_mode;
@@ -1558,11 +1934,7 @@ const Window = struct {
         self.render_cache.deinit();
         allocator.free(self.session_ui_info);
         self.ui.deinit(self.pw.renderer);
-        var i: usize = 0;
-        while (i < self.init_count) : (i += 1) {
-            self.sessions_storage[i].deinit(allocator);
-        }
-        allocator.free(self.sessions_storage);
+        // Sessions stay in App.pool (armed exit watchers may still point at them).
         allocator.free(self.sessions);
         self.ui_font.deinit();
         self.grid_font.deinit();
@@ -1680,6 +2052,7 @@ const Window = struct {
         pending.completion.complete(.{ .success = .{
             .session_id = session.id,
             .slot_index = plan.slot_index,
+            .window_index = app.windowIndex(self),
         } });
     }
 
@@ -1886,8 +2259,7 @@ const Window = struct {
     }
 
     fn handleQuitRequest(self: *Window) bool {
-        const sessions = self.sessions;
-        const running_processes = countForegroundProcesses(sessions);
+        const running_processes = self.app.countForegroundProcessesAll();
         if (running_processes > 0) {
             self.quit_confirm_component.show(running_processes);
             return false;
@@ -1897,16 +2269,40 @@ const Window = struct {
 
     fn startQuitFlow(self: *Window) bool {
         const app = self.app;
-        const sessions = self.sessions;
         if (builtin.os.tag != .macos) return true;
         if (app.quit_teardown.active) return false;
-        const started = app.quit_teardown.start(sessions) catch |err| {
+        const started = app.quit_teardown.start(app.allocator, app.pool.items) catch |err| {
             log.warn("quit teardown: failed to start worker thread: {}", .{err});
             return true;
         };
         if (!started) return true;
         self.quit_blocking_overlay_component.setActive(true);
         return false;
+    }
+
+    /// Close this window (close button / Cmd+Shift+W). The last window takes
+    /// the quit path; otherwise confirm when something is still running.
+    fn requestClose(self: *Window) void {
+        const app = self.app;
+        if (app.quit_teardown.active) return;
+        if (app.windows.items.len <= 1) {
+            if (self.handleQuitRequest()) {
+                if (self.startQuitFlow()) app.running = false;
+            }
+            return;
+        }
+        const running_processes = countForegroundProcesses(self.sessions);
+        if (running_processes > 0) {
+            self.confirm_dialog_component.show(
+                "Close Window?",
+                "A process is still running in this window. Close anyway?",
+                "Close",
+                "Cancel",
+                .{ .CloseWindow = {} },
+            );
+            return;
+        }
+        app.closing_window = self;
     }
 
     /// One SDL event for this window: UI overlays get first refusal, then the
@@ -1931,7 +2327,8 @@ const Window = struct {
             const mod = scaled_event.key.mod;
             const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
             const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
-            if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
+            const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
+            if (has_gui and !has_blocking_mod and !has_shift and key == c.SDLK_W) {
                 // Use 2 frames to cover the delay between Cmd+W and SDL delivering a close request.
                 // A single frame is not always enough to suppress the close in the next loop.
                 self.window_close_suppress_countdown = 2;
@@ -1981,22 +2378,13 @@ const Window = struct {
                     self.window_close_suppress_countdown = 0;
                     return;
                 }
-                if (self.handleQuitRequest()) {
-                    if (self.startQuitFlow()) {
-                        app.running = false;
-                    }
-                }
-            },
-            c.SDL_EVENT_WINDOW_DESTROYED => {
-                app.running = false;
+                self.requestClose();
             },
             c.SDL_EVENT_WINDOW_MOVED => {
                 self.window_x = scaled_event.window.data1;
                 self.window_y = scaled_event.window.data2;
 
-                app.persistence.window.x = self.window_x;
-                app.persistence.window.y = self.window_y;
-                app.persistence_dirty = true;
+                self.persistGeometry();
                 savePersistenceIfDirty(&app.persistence, allocator, &app.persistence_dirty);
             },
             c.SDL_EVENT_WINDOW_RESIZED => {
@@ -2017,11 +2405,7 @@ const Window = struct {
 
                 std.debug.print("Window resized to: {d}x{d} (render {d}x{d}), terminal size: {d}x{d}\n", .{ self.window_width_points, self.window_height_points, self.render_width, self.render_height, self.full_cols, self.full_rows });
 
-                app.persistence.window.width = self.window_width_points;
-                app.persistence.window.height = self.window_height_points;
-                app.persistence.window.x = self.window_x;
-                app.persistence.window.y = self.window_y;
-                app.persistence_dirty = true;
+                self.persistGeometry();
                 savePersistenceIfDirty(&app.persistence, allocator, &app.persistence_dirty);
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
@@ -2042,6 +2426,8 @@ const Window = struct {
             },
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
                 self.window_focused = true;
+                app.last_focused = self;
+                app.applyVsyncFocus(self);
                 if (builtin.os.tag == .macos) {
                     app.input_source_tracker.restore() catch |err| {
                         log.warn("Failed to restore input source: {}", .{err});
@@ -2052,13 +2438,6 @@ const Window = struct {
                     }
                     platform.startTextInput(self.pw.window);
                     self.text_input_active = true;
-                }
-            },
-            c.SDL_EVENT_KEYMAP_CHANGED => {
-                if (builtin.os.tag == .macos) {
-                    app.input_source_tracker.capture() catch |err| {
-                        log.warn("Failed to capture input source: {}", .{err});
-                    };
                 }
             },
             c.SDL_EVENT_TEXT_INPUT => {
@@ -2126,6 +2505,7 @@ const Window = struct {
 
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_blocking_mod = (mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_ALT)) != 0;
+                const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
                 const terminal_shortcut: ?usize = if (self.worktree_comp_ptr.overlay.state == .Closed)
                     input.terminalSwitchShortcut(key, mod, self.grid.cols * self.grid.rows)
                 else
@@ -2166,7 +2546,19 @@ const Window = struct {
                     return;
                 }
 
-                if (has_gui and !has_blocking_mod and key == c.SDLK_W) {
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_N) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧N", now);
+                    app.requestNewWindow(self);
+                    return;
+                }
+
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_W) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧W", now);
+                    self.requestClose();
+                    return;
+                }
+
+                if (has_gui and !has_blocking_mod and !has_shift and key == c.SDLK_W) {
                     if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘W", now);
                     const session_idx = self.anim_state.focused_session;
                     const session = sessions[session_idx];
@@ -2467,7 +2859,7 @@ const Window = struct {
                         };
                         self.ui.showToast(notification_msg, now);
                     }
-                } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and (self.anim_state.mode == .Full or self.anim_state.mode == .Grid)) {
+                } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and !has_shift and (self.anim_state.mode == .Full or self.anim_state.mode == .Grid)) {
                     if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘N", now);
 
                     // Grid sizing is driven by VISIBLE sessions; hidden ones are
@@ -2723,6 +3115,19 @@ const Window = struct {
     }
 
     /// Feed PTY output into terminals, flush pending writes, track cwd changes.
+    /// Write this window's position/size into its persistence entry.
+    fn persistGeometry(self: *Window) void {
+        const app = self.app;
+        const idx = app.windowIndex(self);
+        if (idx >= app.persistence.windows.items.len) return;
+        const entry = &app.persistence.windows.items[idx];
+        entry.window.x = self.window_x;
+        entry.window.y = self.window_y;
+        entry.window.width = self.window_width_points;
+        entry.window.height = self.window_height_points;
+        app.persistence_dirty = true;
+    }
+
     fn pumpSessions(self: *Window, now: i64) void {
         const app = self.app;
         const allocator = app.allocator;
@@ -2752,7 +3157,7 @@ const Window = struct {
                     app.persistence.appendRecentFolder(allocator, new_cwd) catch |err| {
                         log.warn("failed to update recent folders: {}", .{err});
                     };
-                    self.recent_folders_comp_ptr.setFolders(app.persistence.getRecentFolders());
+                    app.refreshRecentFolders();
                     app.persistence_dirty = true;
                 }
             }
@@ -2779,7 +3184,7 @@ const Window = struct {
                 };
                 // Chime when an agent needs you or finishes, but only while
                 // Cadre is backgrounded (foreground already shows the border).
-                if (wants_attention and app.config.notifications.sound and !self.window_focused) {
+                if (wants_attention and app.config.notifications.sound and !app.anyWindowFocused()) {
                     notify_sound.play(allocator, s.state);
                 }
                 const is_focused_full = self.anim_state.mode == .Full and self.anim_state.focused_session == session_idx;
@@ -3074,6 +3479,9 @@ const Window = struct {
                     }
                 }
             },
+            .CloseWindow => {
+                if (!app.quit_teardown.active) app.closing_window = self;
+            },
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
                     defer allocator.free(config_path);
@@ -3185,20 +3593,22 @@ const Window = struct {
                     continue;
                 }
 
-                for (sessions, 0..) |other_session, idx| {
-                    if (idx == remove_action.session) continue;
-                    if (!other_session.spawned or other_session.dead) continue;
+                for (app.windows.items) |other_window| {
+                    for (other_window.sessions) |other_session| {
+                        if (other_session == session) continue;
+                        if (!other_session.spawned or other_session.dead) continue;
 
-                    const other_cwd = other_session.cwd_path orelse continue;
-                    if (std.mem.eql(u8, other_cwd, remove_action.path)) {
-                        self.ui.showToast("Worktree in use by another session", now);
-                        continue :ui_action_loop;
-                    }
-                    if (std.mem.startsWith(u8, other_cwd, remove_action.path)) {
-                        const suffix = other_cwd[remove_action.path.len..];
-                        if (suffix.len > 0 and suffix[0] == '/') {
+                        const other_cwd = other_session.cwd_path orelse continue;
+                        if (std.mem.eql(u8, other_cwd, remove_action.path)) {
                             self.ui.showToast("Worktree in use by another session", now);
                             continue :ui_action_loop;
+                        }
+                        if (std.mem.startsWith(u8, other_cwd, remove_action.path)) {
+                            const suffix = other_cwd[remove_action.path.len..];
+                            if (suffix.len > 0 and suffix[0] == '/') {
+                                self.ui.showToast("Worktree in use by another session", now);
+                                continue :ui_action_loop;
+                            }
                         }
                     }
                 }
@@ -3427,7 +3837,8 @@ const Window = struct {
         );
 
         // E2E harness observability (no-op unless CADRE_TEST_MODE is set).
-        test_probe.writeState(allocator, &ui_render_host);
+        // One state file: the focused window owns it.
+        if (self == app.focusedWindow()) test_probe.writeState(allocator, &ui_render_host);
 
         const animating = self.anim_state.mode != .Grid and self.anim_state.mode != .Full;
         const ui_needs_frame = self.ui.needsFrame(&ui_render_host);
@@ -3517,54 +3928,6 @@ const Window = struct {
             self.window_close_suppress_countdown -= 1;
         }
     }
-
-    /// After the loop exits: refresh cwds, finish the quit teardown and scrape
-    /// agent ids, then sync the terminal entries one last time.
-    fn finalizeOnExit(self: *Window) void {
-        const app = self.app;
-        const allocator = app.allocator;
-        const sessions = self.sessions;
-        if (builtin.os.tag == .macos) {
-            const now = std.time.milliTimestamp();
-            for (sessions) |session| {
-                session.updateCwd(now);
-            }
-
-            if (app.quit_teardown.active) {
-                self.quit_blocking_overlay_component.setActive(false);
-                app.quit_teardown.join();
-                drainQuitCaptureOutput(app.quit_teardown.tasks[0..app.quit_teardown.task_count], sessions[0..]);
-                for (app.quit_teardown.tasks[0..app.quit_teardown.task_count]) |task| {
-                    const session = sessions[task.session_idx];
-                    session.stopQuitCapture();
-                    const text = session.quitCaptureBytes();
-                    log.debug("quit teardown: session {d} extracted {d} bytes of terminal text", .{ task.session_idx, text.len });
-                    if (terminal_history.extractLastUuid(text)) |uuid| {
-                        // Scrape succeeded: overwrite with the freshest id from the farewell banner.
-                        // Dup first so a failed alloc keeps the existing (hook-captured) id intact.
-                        if (allocator.dupe(u8, uuid)) |new_id| {
-                            if (session.agent_session_id) |sid| allocator.free(sid);
-                            session.agent_session_id = new_id;
-                            session.agent_kind = task.agent_kind;
-                            session.agent_metadata_captured = true;
-                            log.info("quit teardown: session {d} captured session id: {s}", .{ task.session_idx, uuid });
-                        } else |err| {
-                            log.warn("quit teardown: session {d} failed to allocate session id: {}", .{ task.session_idx, err });
-                        }
-                    } else {
-                        // Scrape failed: KEEP whatever the SessionStart hook captured this run instead
-                        // of wiping it. The live hook is the reliable source of the resume id; the quit
-                        // scrape is only a best-effort fallback for agents without the hook.
-                        log.warn("quit teardown: session {d} agent {s} exited; no id in farewell output, keeping live-captured id (captured={})", .{ task.session_idx, task.agent_kind.name(), session.agent_metadata_captured });
-                    }
-                }
-            }
-
-            _ = syncPersistenceTerminalEntriesFromSessions(&app.persistence, sessions, allocator) catch |err| {
-                std.debug.print("Failed to refresh terminal persistence: {}\n", .{err});
-            };
-        }
-    }
 };
 
 pub fn run() !void {
@@ -3649,6 +4012,7 @@ pub fn run() !void {
     };
     errdefer app.persistence.deinit(allocator);
     app.persistence.font_size = std.math.clamp(app.persistence.font_size, min_font_size, max_font_size);
+    try app.persistence.ensureWindowEntries(allocator);
 
     // Mint the per-install tmux-name epoch (first launch after upgrade) and hand
     // it to the tmux layer BEFORE any session spawns, so `cadre-<epoch>-<n>`
@@ -3783,11 +4147,60 @@ pub fn run() !void {
     app.running = true;
     app.persistence_dirty = false;
     app.quit_teardown = QuitTeardownState{};
+    defer app.quit_teardown.deinit(allocator);
     app.next_frame_wait = .none;
+    app.windows = .{};
+    app.pool = .{};
+    app.last_focused = null;
+    app.pending_new_window = null;
+    app.closing_window = null;
 
-    const window = try Window.create(&app, restored_slice);
-    defer window.destroy();
+    // Pool sessions outlive every window (UI components reference them), so
+    // this defer is registered first and runs after the windows are destroyed.
+    defer {
+        for (app.pool.items) |session| {
+            session.deinit(allocator);
+            allocator.destroy(session);
+        }
+        app.pool.deinit(allocator);
+    }
+    defer {
+        for (app.windows.items) |w| w.destroy();
+        app.windows.deinit(allocator);
+        if (app.pending_new_window) |req| {
+            if (req.cwd) |cwd| allocator.free(cwd);
+        }
+    }
     defer app.quit_teardown.join();
+
+    // One window per persisted [[windows]] entry (a legacy file yields one),
+    // each restoring the terminals that belong to it. Entries pointing past
+    // the window list fall back to window 0 instead of being dropped.
+    {
+        const window_count = app.persistence.windows.items.len;
+        var k: usize = 0;
+        while (k < app.persistence.windows.items.len) {
+            var group: std.ArrayListUnmanaged(config_mod.Persistence.TerminalEntry) = .{};
+            defer group.deinit(allocator);
+            for (restored_slice) |entry| {
+                const wi = if (entry.window_index < window_count) entry.window_index else 0;
+                if (wi != k or group.items.len >= grid_layout.max_terminals) continue;
+                try group.append(allocator, entry);
+            }
+            const entry = app.persistence.windows.items[k];
+            const created = Window.create(&app, group.items, entry.window, entry.focused_session, entry.zoomed, null) catch |err| {
+                if (k == 0) return err;
+                log.err("failed to restore window {d}: {}; its terminals stay detached in tmux", .{ k, err });
+                _ = app.persistence.windows.orderedRemove(k);
+                app.persistence_dirty = true;
+                continue;
+            };
+            try app.windows.append(allocator, created);
+            k += 1;
+        }
+    }
+    app.applyVsyncFocus(app.focusedWindow());
+    log.info("restored {d} window(s)", .{app.windows.items.len});
 
     // Now that every restored/first session has reattached and holds a client,
     // drain the socket's detached-session graveyard (crashed instances, closed
@@ -3796,39 +4209,40 @@ pub fn run() !void {
     // must not cost the agent its session). Same-epoch sessions are only fair
     // game once every restored entry carried an index — a legacy file without
     // them can't tell a graveyard fossil from a live terminal's session.
-    if (window.sessions[0].tmux_backed) {
-        var keep_buf: [grid_layout.max_terminals]usize = undefined;
-        var keep_len: usize = 0;
+    if (app.windows.items[0].sessions[0].tmux_backed) {
+        var keep: std.ArrayListUnmanaged(usize) = .{};
+        defer keep.deinit(allocator);
         var all_indexed = true;
         for (restored_slice) |entry| {
             if (entry.persist_index) |pi| {
-                if (keep_len < keep_buf.len) {
-                    keep_buf[keep_len] = pi;
-                    keep_len += 1;
-                }
+                keep.append(allocator, pi) catch |err| {
+                    log.warn("reaper keep list allocation failed: {}", .{err});
+                };
             } else all_indexed = false;
         }
-        tmux.reapDetachedSessions(allocator, keep_buf[0..keep_len], all_indexed);
+        tmux.reapDetachedSessions(allocator, keep.items, all_indexed);
     }
 
     // Main loop: optionally wait for the next wake-worthy event, then handle SDL
     // input, feed PTY output into terminals, apply async notifications, drive
-    // animations, and render at the current cadence.
+    // animations, and render each window at the current cadence.
     while (app.running) {
         var next_event = waitForNextFrame(app.next_frame_wait);
         const frame_start_ns: i128 = std.time.nanoTimestamp();
         const now = std.time.milliTimestamp();
-        if (window.relaunch_trace_frames > 0) {
-            log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
-                @tagName(window.anim_state.mode),
-                window.grid.is_resizing,
-                window.grid.cols,
-                window.grid.rows,
-            });
+        for (app.windows.items) |window| {
+            if (window.relaunch_trace_frames > 0) {
+                log.info("frame trace start mode={s} grid_resizing={} grid={d}x{d}", .{
+                    @tagName(window.anim_state.mode),
+                    window.grid.is_resizing,
+                    window.grid.cols,
+                    window.grid.rows,
+                });
+            }
+            window.processed_event = false;
         }
 
         var event: c.SDL_Event = undefined;
-        window.processed_event = false;
         while (true) {
             if (next_event) |ready_event| {
                 event = ready_event;
@@ -3837,22 +4251,26 @@ pub fn run() !void {
                 break;
             }
             if (platform.isWakeEvent(&app.core, &event)) continue;
-            try window.handleEvent(&event, now);
+            if (app.windows.items.len == 0) break;
+            try app.dispatchEvent(&event, now);
         }
 
         if (!app.running) break;
+        app.createWindowFromRequest();
 
         app.loop.run(.no_wait) catch |err| {
             log.err("xev loop run failed: {}", .{err});
             return err;
         };
-        if (window.relaunch_trace_frames > 0) {
-            log.info("frame trace after xev run", .{});
+
+        for (app.windows.items) |window| {
+            if (window.relaunch_trace_frames > 0) {
+                log.info("frame trace after xev run", .{});
+            }
+            window.pumpSessions(now);
         }
 
-        window.pumpSessions(now);
-
-        const terminal_entries_changed = syncPersistenceTerminalEntriesFromSessions(&app.persistence, window.sessions, allocator) catch |err| blk: {
+        const terminal_entries_changed = app.syncPersistenceFromWindows() catch |err| blk: {
             log.warn("failed to sync terminal persistence state: {}", .{err});
             break :blk false;
         };
@@ -3860,24 +4278,21 @@ pub fn run() !void {
             app.persistence_dirty = true;
         }
         // Persist focus + zoom so the active/zoomed pane is restored on relaunch (2c).
-        const cur_zoomed = window.anim_state.mode == .Full;
-        if (app.persistence.focused_session != window.anim_state.focused_session or app.persistence.zoomed != cur_zoomed) {
-            app.persistence.focused_session = window.anim_state.focused_session;
-            app.persistence.zoomed = cur_zoomed;
-            app.persistence_dirty = true;
-        }
+        app.syncWindowViewState();
         savePersistenceIfDirty(&app.persistence, allocator, &app.persistence_dirty);
 
         if (app.quit_teardown.isFinished()) {
             app.running = false;
         }
-        window.any_session_dirty = window.render_cache.anyDirty(window.sessions);
+        for (app.windows.items) |window| {
+            window.any_session_dirty = window.render_cache.anyDirty(window.sessions);
+        }
 
         var control_requests = app.control_queue.drainAll();
         defer control_requests.deinit(allocator);
         var had_control_requests = control_requests.items.len > 0;
         for (control_requests.items) |*request| {
-            window.handleExternalSpawnRequest(request, now);
+            app.handleControlSpawn(request, now);
             request.request.deinit(allocator);
         }
 
@@ -3885,7 +4300,7 @@ pub fn run() !void {
         defer close_requests.deinit(allocator);
         if (close_requests.items.len > 0) had_control_requests = true;
         for (close_requests.items) |*request| {
-            window.handleExternalCloseRequest(request, now);
+            app.handleControlClose(request, now);
         }
 
         var notifications = app.notify_queue.drainAll();
@@ -3893,7 +4308,7 @@ pub fn run() !void {
         const had_notifications = notifications.items.len > 0;
         var captured_agent_session_id = false;
         for (notifications.items) |note| {
-            if (window.applyNotification(note, now)) captured_agent_session_id = true;
+            if (app.applyNotification(note, now)) captured_agent_session_id = true;
         }
 
         // A SessionStart hook just delivered a fresh resume id this frame — but
@@ -3902,7 +4317,7 @@ pub fn run() !void {
         // of a frame later, closing the window where a reboot could lose an id we
         // already hold in memory.
         if (captured_agent_session_id) {
-            if (syncPersistenceTerminalEntriesFromSessions(&app.persistence, window.sessions, allocator) catch |err| blk: {
+            if (app.syncPersistenceFromWindows() catch |err| blk: {
                 log.warn("failed to re-sync terminal persistence after agent-session capture: {}", .{err});
                 break :blk false;
             }) {
@@ -3911,17 +4326,28 @@ pub fn run() !void {
             savePersistenceIfDirty(&app.persistence, allocator, &app.persistence_dirty);
         }
 
-        try window.update(now);
+        for (app.windows.items) |window| {
+            try window.update(now);
+        }
 
-        const is_idle = try window.renderIfNeeded(now, frame_start_ns, had_notifications, had_control_requests);
-        window.endFrame();
+        var is_idle = true;
+        for (app.windows.items) |window| {
+            const window_idle = try window.renderIfNeeded(now, frame_start_ns, had_notifications, had_control_requests);
+            if (!window_idle) is_idle = false;
+            window.endFrame();
+        }
+
+        // Window closes are applied after every window rendered this frame.
+        app.finishClosingWindow();
+        if (app.windows.items.len == 0) app.running = false;
 
         const frame_end_ns: i128 = std.time.nanoTimestamp();
         const frame_ns = frame_end_ns - frame_start_ns;
-        app.next_frame_wait = computeFrameWaitDecision(is_idle, window.pw.vsync_enabled, frame_ns);
+        const focused_vsync = if (app.windows.items.len > 0) app.focusedWindow().pw.vsync_enabled else false;
+        app.next_frame_wait = computeFrameWaitDecision(is_idle, focused_vsync, frame_ns);
     }
 
-    window.finalizeOnExit();
+    app.finalizeOnExit();
 
     app.persistence.save(allocator) catch |err| {
         std.debug.print("Failed to save persistence: {}\n", .{err});
@@ -4772,4 +5198,64 @@ test "reordered arrangement round-trips through persistence entries" {
     try std.testing.expectEqualStrings("/c", restored[0].cwd_path.?);
     try std.testing.expectEqualStrings("/a", restored[1].cwd_path.?);
     try std.testing.expectEqualStrings("/b", restored[2].cwd_path.?);
+}
+
+test "eventWindowId reads the window id for routed event types only" {
+    var key = std.mem.zeroes(c.SDL_Event);
+    key.type = c.SDL_EVENT_KEY_DOWN;
+    key.key.windowID = 7;
+    try std.testing.expectEqual(@as(?c.SDL_WindowID, 7), eventWindowId(&key));
+
+    var resized = std.mem.zeroes(c.SDL_Event);
+    resized.type = c.SDL_EVENT_WINDOW_RESIZED;
+    resized.window.windowID = 3;
+    try std.testing.expectEqual(@as(?c.SDL_WindowID, 3), eventWindowId(&resized));
+
+    var wheel = std.mem.zeroes(c.SDL_Event);
+    wheel.type = c.SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.windowID = 9;
+    try std.testing.expectEqual(@as(?c.SDL_WindowID, 9), eventWindowId(&wheel));
+
+    var quit = std.mem.zeroes(c.SDL_Event);
+    quit.type = c.SDL_EVENT_QUIT;
+    try std.testing.expectEqual(@as(?c.SDL_WindowID, null), eventWindowId(&quit));
+}
+
+test "syncPersistenceTerminalEntriesFromSlices groups entries by window" {
+    const allocator = std.testing.allocator;
+
+    var persistence = config_mod.Persistence.init(allocator);
+    defer persistence.deinit(allocator);
+
+    var storage: [3]SessionState = undefined;
+    for (&storage, 0..) |*session, i| {
+        session.* = undefined;
+        session.spawned = true;
+        session.dead = false;
+        session.hidden = false;
+        session.cwd_path = null;
+        session.agent_kind = null;
+        session.agent_session_id = null;
+        session.agent_metadata_captured = false;
+        session.persist_index = i;
+    }
+    storage[0].cwd_path = "/w0a";
+    storage[1].cwd_path = "/w0b";
+    storage[2].cwd_path = "/w1";
+    var win0 = [_]*SessionState{ &storage[0], &storage[1] };
+    var win1 = [_]*SessionState{&storage[2]};
+    const groups = [_][]const *SessionState{ &win0, &win1 };
+
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSlices(&persistence, &groups, allocator));
+    try std.testing.expectEqual(@as(usize, 3), persistence.terminal_entries.items.len);
+    try std.testing.expectEqual(@as(usize, 0), persistence.terminal_entries.items[1].window_index);
+    try std.testing.expectEqual(@as(usize, 1), persistence.terminal_entries.items[2].window_index);
+    try std.testing.expectEqualStrings("/w1", persistence.terminal_entries.items[2].path);
+    // Stable: a second sync with the same windows is a no-op.
+    try std.testing.expect(!(try syncPersistenceTerminalEntriesFromSlices(&persistence, &groups, allocator)));
+    // Moving a terminal to another window is a change.
+    const moved = [_][]const *SessionState{ &win1, &win0 };
+    try std.testing.expect(try syncPersistenceTerminalEntriesFromSlices(&persistence, &moved, allocator));
+    try std.testing.expectEqual(@as(usize, 0), persistence.terminal_entries.items[0].window_index);
+    try std.testing.expectEqualStrings("/w1", persistence.terminal_entries.items[0].path);
 }

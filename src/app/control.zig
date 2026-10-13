@@ -58,6 +58,8 @@ pub const SpawnRequest = struct {
 pub const SpawnSuccess = struct {
     session_id: usize,
     slot_index: usize,
+    /// Index of the window the session was placed in (the focused one).
+    window_index: usize = 0,
 };
 
 pub const SpawnFailure = struct {
@@ -890,6 +892,8 @@ pub fn controlResponseAlloc(allocator: std.mem.Allocator, response: SpawnRespons
             try json.write(success.session_id);
             try json.objectField("slot_index");
             try json.write(success.slot_index);
+            try json.objectField("window_index");
+            try json.write(success.window_index);
         },
         .failure => |failure| {
             try json.objectField("ok");
@@ -1151,9 +1155,15 @@ fn parseControlResponse(allocator: std.mem.Allocator, bytes: []const u8) !OwnedS
         const slot_index_value = object.get("slot_index") orelse return error.InvalidControlResponse;
         if (session_id_value != .integer or slot_index_value != .integer) return error.InvalidControlResponse;
         if (session_id_value.integer < 0 or slot_index_value.integer < 0) return error.InvalidControlResponse;
+        // window_index is optional for responses from a single-window build.
+        const window_index: usize = if (object.get("window_index")) |v|
+            (if (v == .integer and v.integer >= 0) @intCast(v.integer) else 0)
+        else
+            0;
         return .{ .response = .{ .success = .{
             .session_id = @intCast(session_id_value.integer),
             .slot_index = @intCast(slot_index_value.integer),
+            .window_index = window_index,
         } } };
     }
 

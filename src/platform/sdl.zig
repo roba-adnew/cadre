@@ -175,6 +175,21 @@ pub fn stopTextInput(window: *c.SDL_Window) void {
     _ = c.SDL_StopTextInput(window);
 }
 
+/// Toggle vsync on this window's renderer. With several windows, only the
+/// focused one keeps vsync so N presents per frame do not stack refresh waits.
+pub fn setVSync(w: *PlatformWindow, on: bool) void {
+    if (w.vsync_enabled == on) return;
+    if (!c.SDL_SetRenderVSync(w.renderer, if (on) 1 else 0)) {
+        log.warn("failed to set vsync={}: {s}", .{ on, c.SDL_GetError() });
+        return;
+    }
+    w.vsync_enabled = on;
+}
+
+pub fn windowId(w: *const PlatformWindow) c.SDL_WindowID {
+    return c.SDL_GetWindowID(w.window);
+}
+
 pub fn deinitWindow(w: *PlatformWindow) void {
     c.SDL_DestroyRenderer(w.renderer);
     c.SDL_DestroyWindow(w.window);

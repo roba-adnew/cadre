@@ -110,6 +110,9 @@ pub const UiAction = union(enum) {
     /// passthrough + text) stays owned by runtime, same as Cmd+V.
     PasteIntoFocused: void,
     ConfirmQuit: void,
+    /// Close the window that emitted it (confirm dialog accepted, or nothing
+    /// was running). The last window goes through ConfirmQuit instead.
+    CloseWindow: void,
     OpenConfig: void,
     SwitchWorktree: SwitchWorktreeAction,
     CreateWorktree: CreateWorktreeAction,
