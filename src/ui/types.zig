@@ -128,6 +128,11 @@ pub const UiAction = union(enum) {
     MoveSessionToNewWindow: usize,
     /// Move the session at `idx` into the existing window `window_index`.
     MoveSessionToWindow: MoveSessionAction,
+    /// A hold-drag was released OUTSIDE the window: the tile at visible slot
+    /// `idx` (started at `origin`) is dropped at screen point (x, y). The app
+    /// resolves whether that is another window (move + land there) or empty
+    /// screen (open a new window at the drop point).
+    DragSessionOut: DragOutAction,
     ToggleMetrics: void,
     ToggleDiffOverlay: void,
     ToggleReaderOverlay: void,
@@ -143,6 +148,13 @@ pub const ReorderMove = struct {
 pub const MoveSessionAction = struct {
     idx: usize,
     window_index: usize,
+};
+
+pub const DragOutAction = struct {
+    idx: usize,
+    origin: usize,
+    screen_x: c_int,
+    screen_y: c_int,
 };
 
 pub const SwitchWorktreeAction = struct {

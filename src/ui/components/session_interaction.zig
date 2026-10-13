@@ -72,6 +72,19 @@ pub const SessionInteractionComponent = struct {
     /// that becomes a hold-drag never flashes a focus change first. Fired on
     /// release, or immediately when the press demotes into a text selection.
     deferred_select: ?usize = null,
+    /// Slot to outline while ANOTHER window's drag hovers over this window
+    /// (set per frame by the app); draws the same lift cue as a local drag.
+    drop_hint: ?usize = null,
+
+    pub fn isReordering(self: *const SessionInteractionComponent) bool {
+        return self.reorder_phase == .active;
+    }
+
+    pub fn setDropHint(self: *SessionInteractionComponent, hint: ?usize) void {
+        if (std.meta.eql(self.drop_hint, hint)) return;
+        self.drop_hint = hint;
+        self.reorder_first_frame.markTransition();
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -260,8 +273,10 @@ pub const SessionInteractionComponent = struct {
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                 // The release will land in another app; end the gesture but
-                // let the runtime's own focus-lost handling run too.
-                if (self.reorder_phase != .idle) self.endReorder();
+                // let the runtime's own focus-lost handling run too. A still
+                // held button means the drag is crossing into another Cadre
+                // window (its release still reaches us via mouse capture).
+                if (self.reorder_phase != .idle and !leftButtonHeldGlobally()) self.endReorder();
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
@@ -497,7 +512,25 @@ pub const SessionInteractionComponent = struct {
                     switch (self.reorder_phase) {
                         // The drag owned this press; every re-slot was already
                         // committed live, so release just ends the gesture.
+                        // Released outside the window: hand the tile to the
+                        // app, which decides between another window and a
+                        // brand-new one at the drop point.
                         .active => {
+                            const up_x: c_int = @intFromFloat(event.button.x);
+                            const up_y: c_int = @intFromFloat(event.button.y);
+                            if (!pointerInsideWindow(up_x, up_y, host.window_w, host.window_h)) {
+                                var gx: f32 = 0;
+                                var gy: f32 = 0;
+                                _ = c.SDL_GetGlobalMouseState(&gx, &gy);
+                                actions.append(.{ .DragSessionOut = .{
+                                    .idx = self.reorder_slot,
+                                    .origin = self.reorder_origin_slot,
+                                    .screen_x = @intFromFloat(gx),
+                                    .screen_y = @intFromFloat(gy),
+                                } }) catch |err| {
+                                    log.warn("failed to queue drag-out of slot {d}: {}", .{ self.reorder_slot, err });
+                                };
+                            }
                             self.endReorder();
                             return true;
                         },
@@ -667,7 +700,8 @@ pub const SessionInteractionComponent = struct {
                     }
                 }
                 if (!dragging_scrollbar and inGridView(host.view_mode) and self.reorder_phase == .active) {
-                    if (reorderTargetSlot(mouse_x, mouse_y, host.grid_cols, host.grid_rows, host.cell_w, host.cell_h, visibleCount(self.sessions))) |target| {
+                    const inside = pointerInsideWindow(mouse_x, mouse_y, host.window_w, host.window_h);
+                    if (if (inside) reorderTargetSlot(mouse_x, mouse_y, host.grid_cols, host.grid_rows, host.cell_w, host.cell_h, visibleCount(self.sessions)) else null) |target| {
                         if (target != self.reorder_slot) {
                             actions.append(.{ .ReorderGridSessions = .{ .from = self.reorder_slot, .to = target } }) catch |err| {
                                 log.warn("failed to queue reorder action {d}->{d}: {}", .{ self.reorder_slot, target, err });
@@ -847,8 +881,11 @@ pub const SessionInteractionComponent = struct {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         _ = assets;
         defer self.reorder_first_frame.markDrawn();
-        if (self.reorder_phase != .active or !inGridView(host.view_mode)) return;
-        const rect = sessionRectForIndex(host, self.reorder_slot) orelse return;
+        const slot: usize = if (self.reorder_phase == .active and inGridView(host.view_mode))
+            self.reorder_slot
+        else
+            self.drop_hint orelse return;
+        const rect = sessionRectForIndex(host, slot) orelse return;
         const thickness = dpi.scale(renderer_mod.grid_border_thickness + 2, host.ui_scale);
         // Theme text color at reduced alpha: reads as a lifted outline on both
         // light and dark themes.
@@ -1857,6 +1894,27 @@ fn visibleCount(sessions: []const *SessionState) usize {
         if (s.isVisible()) n += 1;
     }
     return n;
+}
+
+/// Release/motion decision for an active drag: inside the window's render
+/// area the gesture is a local reorder; outside it is a drag-out.
+fn pointerInsideWindow(mouse_x: c_int, mouse_y: c_int, window_w: c_int, window_h: c_int) bool {
+    return mouse_x >= 0 and mouse_y >= 0 and mouse_x < window_w and mouse_y < window_h;
+}
+
+fn leftButtonHeldGlobally() bool {
+    var gx: f32 = 0;
+    var gy: f32 = 0;
+    return (c.SDL_GetGlobalMouseState(&gx, &gy) & c.SDL_BUTTON_LMASK) != 0;
+}
+
+test "pointerInsideWindow: inside is a reorder, outside is a drag-out" {
+    try std.testing.expect(pointerInsideWindow(0, 0, 800, 600));
+    try std.testing.expect(pointerInsideWindow(799, 599, 800, 600));
+    try std.testing.expect(!pointerInsideWindow(800, 10, 800, 600));
+    try std.testing.expect(!pointerInsideWindow(10, 600, 800, 600));
+    try std.testing.expect(!pointerInsideWindow(-1, 10, 800, 600));
+    try std.testing.expect(!pointerInsideWindow(10, -5, 800, 600));
 }
 
 /// True when the pointer has traveled past the reorder slop — the press is a
