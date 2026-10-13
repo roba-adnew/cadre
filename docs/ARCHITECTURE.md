@@ -14,13 +14,13 @@ graph TD
     end
 
     subgraph Application Layer
-        RT["app/runtime.zig<br/><i>Frame loop, lifetime, config, session spawning</i>"]
+        RT["app/runtime.zig<br/><i>App (process state) + Window (per-window state), frame loop</i>"]
         CTRL["app/control.zig<br/><i>Local control socket, spawn request schema</i>"]
         APP_MODS["app_state, layout, ui_host,<br/>grid_nav, grid_layout, input_keys,<br/>input_text, terminal_actions, worktree"]
     end
 
     subgraph Platform Layer
-        SDL["platform/sdl.zig<br/><i>SDL3 window, renderer, HiDPI</i>"]
+        SDL["platform/sdl.zig<br/><i>PlatformCore (SDL init) + PlatformWindow (window, renderer, HiDPI)</i>"]
         IM["input/mapper.zig<br/><i>Keycodes to VT sequences</i>"]
         CZIG["c.zig<br/><i>C FFI re-exports</i>"]
     end
@@ -91,7 +91,8 @@ Platform    Session    Rendering    UI Overlay
 - UI components communicate with the application exclusively via the `UiAction` queue (never direct state mutation).
 - Background threads are intentionally limited to three cases: the notification socket listener (`session/notify.zig`), the local control socket listener (`app/control.zig`), and a quit-time agent-teardown worker in `app/runtime.zig`. They communicate completion/state back to the main thread through thread-safe primitives. The notification and control listeners also post a custom SDL wake event after queueing work so the idle frame loop breaks out of `SDL_WaitEventTimeout(...)` promptly.
 - Shutdown order is UI-first for teardown dependencies: `UiRoot.deinit()` runs before session teardown so components that reference sessions are released while session memory is still valid.
-- Runtime uses a one-shot teardown guard around UI cleanup so mixed `errdefer`/`defer` error unwind paths cannot deinitialize `UiRoot` twice.
+- Runtime state is split in `app/runtime.zig` between `App` (process-wide: config, persistence, theme, notify/control queues and threads, font caches, the xev loop, quit teardown, `PlatformCore`) and `Window` (per-window: `PlatformWindow` = SDL window + renderer, the fonts and render cache bound to that renderer, the grid, the session slots, the `UiRoot` and its components, animation and input state). `App` lives on `run()`'s stack and the listener threads wake it through `&app.core`; `Window` is heap-allocated and never moved because UI components keep raw pointers into it. Today there is exactly one `Window`; the split is the foundation for multi-window support.
+- `Window.create` uses `errdefer` for each resource and `Window.destroy` tears down in the fixed order UI -> sessions -> fonts -> text input -> renderer/window -> grid, so `UiRoot` is released exactly once on both the error and the normal path.
 - Runtime persistence is updated during the frame loop when runtime state changes (cwd changes, terminal spawn/despawn, window move/resize, font size changes), and finalization is explicit at the end of `app/runtime.zig`: final save and deinit `Persistence` before deferred subsystem teardown begins.
 - Font reload paths are transactional: acquire both replacement fonts first, then swap and destroy old fonts, so a partial reload failure cannot leave deinit hooks pointing at already-freed font resources.
 - Window-resize scale handling follows a single ordered path (`reload-if-needed`, then `resize`) to keep behavior consistent between changed-scale and unchanged-scale events.
@@ -441,11 +442,11 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
 | `mcp/main.zig` | Separate `cadre-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session` and `close_session` tools. | `main()`, `run()` | `app/control` module import, std |
-| `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
+| `app/runtime.zig` | Application lifetime (`App`), per-window state and behavior (`Window`: create/destroy, handleEvent, pumpSessions, update, renderIfNeeded), frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, `App`, `Window` | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/control.zig` | Local control channel shared by the app and `cadre-mcp`: spawn/close request schemas, discovery file, Unix socket listener, request queues, and response serialization. Close requests are discriminated on the wire by `"op":"close"`. | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `CloseRequest`, `CloseResponse`, `CloseQueue`, `startControlThread()`, `connectAndSendSpawnRequest()`, `connectAndSendCloseRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
-| `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
+| `platform/sdl.zig` | SDL3 process init (`PlatformCore`: hints, SDL/TTF init, wake event) and per-window SDL window + Metal renderer + HiDPI sizes (`PlatformWindow`) | `initCore()`, `initWindow()`, `deinitWindow()`, `deinitCore()`, wake event helpers | `c` |
 | `platform/macos_titlebar.zig` | Tint the native macOS title bar to the theme background and place the app name at its right via NSWindow (objc_msgSend) | `style()` | `c`, AppKit |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
