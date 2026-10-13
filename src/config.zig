@@ -15,18 +15,18 @@ pub const Color = struct {
     // #B5BDC8: ~8:1 contrast on the dark background (vs ~10:1 for the old
     // #CDD6E0) to cut light-on-dark glare at low DPI; BrightWhite stays #CDD6E0.
     pub const default_foreground: Color = .{ .r = 181, .g = 189, .b = 200 };
-    pub const default_accent: Color = .{ .r = 97, .g = 175, .b = 239 };
-    pub const default_selection: Color = .{ .r = 27, .g = 34, .b = 48 };
+    pub const default_accent: Color = .{ .r = 251, .g = 146, .b = 60 }; // Cacha logo orange (dark) #FB923C
+    pub const default_selection: Color = .{ .r = 70, .g = 54, .b = 40 }; // warm, accent over the dark background
 
     // Light-mode defaults (`[theme] mode = "light"`), matched to Cacha's light
     // theme (Color+Cacha.swift): background #D6D6D5, soft near-black text #1A1A1A
-    // (Cacha uses pure #000000), selection is Cacha's secondary blue-gray #BAC2CA.
-    // Accent is Cacha's link blue darkened from #3B82F6 to #2563EB so it clears
-    // ~3:1 contrast on the gray background (the lighter blue washed out).
+    // (Cacha uses pure #000000); selection is a warm tint of the accent.
+    // Accent is Cacha's logo orange (#F97316 light / #FB923C dark), the same
+    // values Color+Cacha.swift uses for cachaLogoOrange.
     pub const default_background_light: Color = .{ .r = 214, .g = 214, .b = 213 };
     pub const default_foreground_light: Color = .{ .r = 26, .g = 26, .b = 26 };
-    pub const default_accent_light: Color = .{ .r = 37, .g = 99, .b = 235 };
-    pub const default_selection_light: Color = .{ .r = 186, .g = 194, .b = 202 };
+    pub const default_accent_light: Color = .{ .r = 249, .g = 115, .b = 22 }; // Cacha logo orange (light) #F97316
+    pub const default_selection_light: Color = .{ .r = 218, .g = 196, .b = 178 }; // warm, accent over the light background
 
     pub fn fromHex(hex: []const u8) ?Color {
         const start: usize = if (hex.len > 0 and hex[0] == '#') 1 else 0;
@@ -1225,8 +1225,8 @@ pub const Config = struct {
             \\#                  # The keys below override the active preset.
             \\# background = "#262624"
             \\# foreground = "#B5BDC8"
-            \\# selection = "#1B2230"
-            \\# accent = "#61AFEF"
+            \\# selection = "#463628"
+            \\# accent = "#FB923C"
             \\
             \\# ANSI palette (optional, uncomment to customize)
             \\# [theme.palette]

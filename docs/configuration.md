@@ -100,8 +100,8 @@ Note: Runtime window position and size are saved to `persistence.toml` and take 
 mode = "light"          # "light" = Cacha light preset; omit/"dark" = default dark
 background = "#262624"  # Terminal background color
 foreground = "#B5BDC8"  # Default text color
-selection = "#1B2230"   # Selection highlight color
-accent = "#61AFEF"      # Accent color (focused borders, UI elements)
+selection = "#463628"   # Selection highlight color
+accent = "#FB923C"      # Accent color (focused borders, UI elements; Cacha logo orange)
 ```
 
 Colors are specified in hexadecimal format (`#RRGGBB` or `RRGGBB`).
@@ -123,8 +123,8 @@ mode takes effect on the next launch.
 |---------|---------|---------|-------------|
 | `background` | `#262624` | `#D6D6D5` | App + terminal background |
 | `foreground` | `#B5BDC8` | `#1A1A1A` | Default text color |
-| `selection` | `#1B2230` | `#BAC2CA` | Selection highlight |
-| `accent` | `#61AFEF` | `#2563EB` | Focus indicators / UI accent |
+| `selection` | `#463628` | `#DAC4B2` | Selection highlight |
+| `accent` | `#FB923C` | `#F97316` | Focus indicators / UI accent (Cacha logo orange) |
 
 ### ANSI Palette
 
