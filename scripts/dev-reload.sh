@@ -126,6 +126,10 @@ echo "==> Quitting Cadre (waiting for agents to shut down + flush) and relaunchi
 old_pid="$(daily_pid)"
 # Variables below are for the inner shell, not this one (intentional single quotes).
 # shellcheck disable=SC2016
+# Hand the staging dir to the detached worker: our EXIT trap must NOT delete
+# it while the worker is still waiting for the old app to quit (that race
+# once removed the old bundle and then had nothing to install).
+trap - EXIT
 nohup bash -c '
     set -e
     staging="$1"
@@ -147,7 +151,7 @@ nohup bash -c '
     fi
     rm -rf "/Applications/Cadre.app"
     mv "$staging/Cadre.app" "/Applications/Cadre.app"
-    rmdir "$staging" 2>/dev/null || true
+    rm -rf "$staging"
     open "/Applications/Cadre.app"
     # `open` normally activates, but after a bundle swap the new window has come
     # up behind the current app; activate explicitly once it is running.
