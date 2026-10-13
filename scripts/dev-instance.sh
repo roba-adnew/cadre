@@ -35,6 +35,15 @@ zig build
 dev_config="${CADRE_DEV_CONFIG_DIR:-$HOME/.config/cadre-dev}"
 mkdir -p "$dev_config"
 
+# One dev instance at a time: a second one on the same config dir would attach
+# a second client to the first one's tmux sessions and mirror its terminals.
+# SIGKILL on purpose: a graceful exit would save its stale view over the file.
+if pgrep -f "$ROOT/zig-out/bin/cadre" >/dev/null 2>&1; then
+    echo "==> Stopping the running dev instance first (its terminals stay alive in tmux)."
+    pkill -9 -f "$ROOT/zig-out/bin/cadre" || true
+    sleep 1
+fi
+
 echo "==> Launching ISOLATED dev instance"
 echo "    config dir: $dev_config  (separate from your daily ~/.config/cadre)"
 echo "    It runs alongside your daily Cadre and will NOT touch its agents."
