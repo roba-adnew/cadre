@@ -1776,6 +1776,7 @@ const Window = struct {
     any_session_dirty: bool,
     session_interaction_component: *ui_mod.SessionInteractionComponent,
     find_bar_comp_ptr: *ui_mod.find_bar.FindBarComponent,
+    context_menu_component: *ui_mod.context_menu.ContextMenuComponent,
     worktree_comp_ptr: *ui_mod.worktree_overlay.WorktreeOverlayComponent,
     recent_folders_comp_ptr: *ui_mod.recent_folders_overlay.RecentFoldersOverlayComponent,
     hidden_switcher_comp_ptr: *ui_mod.hidden_switcher.HiddenSwitcherComponent,
@@ -2039,6 +2040,12 @@ const Window = struct {
 
         self.session_interaction_component = try ui_mod.SessionInteractionComponent.init(allocator, sessions, &self.font);
         try self.ui.register(self.session_interaction_component.asComponent());
+
+        // Right-click menu of the window/terminal shortcuts; sits above the
+        // interaction layer so an open menu swallows mouse/keys first.
+        self.context_menu_component = try ui_mod.context_menu.ContextMenuComponent.init(allocator);
+        self.context_menu_component.window_id = self.window_id;
+        try self.ui.register(self.context_menu_component.asComponent());
 
         // Cmd+F find-in-terminal. Shares the interaction component's per-session
         // view states so its highlight/scroll reuses the same selection + scrollback
@@ -2791,6 +2798,13 @@ const Window = struct {
 
                     if (!session.spawned) {
                         log.info("close requested on unspawned session idx={d} mode={s}", .{ session_idx, @tagName(self.anim_state.mode) });
+                        return;
+                    }
+
+                    // Chrome-like: closing the last tab closes the window. The
+                    // last window overall keeps the relaunch-in-place behavior.
+                    if (app.windows.items.len > 1 and countSpawnedSessions(sessions) == 1) {
+                        self.requestClose();
                         return;
                     }
 
