@@ -98,7 +98,7 @@ pub const SessionState = struct {
     /// creation (= the physical array position) and NEVER reassigned — unlike
     /// slot_index, which compactSessions rewrites to the current grid position as
     /// terminals are hidden/closed/reordered. tmux session names
-    /// (`architect-<epoch>-<n>`) key off this so a live pane's name never drifts
+    /// (`cadre-<epoch>-<n>`) key off this so a live pane's name never drifts
     /// out from under it. Keying
     /// them off the mutable slot_index instead let a new terminal reuse a name a
     /// live session still held, and `tmux new-session -A` would ATTACH to (clone)
@@ -169,7 +169,7 @@ pub const SessionState = struct {
     /// True only when agent_kind/agent_session_id were captured during the current run's quit flow.
     /// Restored metadata is used for startup resume injection, but must not be re-persisted as fresh data.
     agent_metadata_captured: bool = false,
-    /// Resume command (e.g. "claude --resume <id>") injected as ARCHITECT_RESUME_CMD into the
+    /// Resume command (e.g. "claude --resume <id>") injected as CADRE_RESUME_CMD into the
     /// next spawn's environment. The wrapper rc runs it ONCE after the user's shell rc finishes
     /// loading — so it never races stdin and can't be eaten by a startup prompt. Owned; freed in
     /// teardown. Null for normal (non-restored) panes.
@@ -270,7 +270,7 @@ pub const SessionState = struct {
         }
 
         // tmux-backed persistence (on by default): when tmux is available the
-        // shell is wrapped in a detached tmux session so it survives an Architect
+        // shell is wrapped in a detached tmux session so it survives an Cadre
         // restart. Null (tmux not installed) spawns a direct shell exactly as
         // before. Freed after spawn — the forked child reads its own copy-on-write
         // copy of these strings, so freeing here is safe.
@@ -358,7 +358,7 @@ pub const SessionState = struct {
         };
     }
 
-    /// Wire identity: exported as ARCHITECT_SESSION_ID and echoed back in
+    /// Wire identity: exported as CADRE_SESSION_ID and echoed back in
     /// every notify-socket message. Equals persist_index (unique within a run,
     /// stable across restarts) so hooks from a tmux-reattached agent, whose
     /// env was baked by a previous run, still resolve to the right terminal —

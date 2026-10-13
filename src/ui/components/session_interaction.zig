@@ -1665,7 +1665,7 @@ fn getLinkMatchAtPin(allocator: std.mem.Allocator, terminal: *ghostty_vt.Termina
 
 /// Turn an OSC 8 URI into an openable target. Claude Code (and other CLIs)
 /// emit cwd-relative targets like `docs/FOO.md` for local files; opened
-/// verbatim, the opener resolves them against Architect's own cwd and silently
+/// verbatim, the opener resolves them against Cadre's own cwd and silently
 /// fails. Scheme-less relative targets are resolved against the pane's cwd
 /// (existing files only); everything else — scheme URLs, absolute paths, or a
 /// relative path that doesn't resolve — passes through verbatim. Caller owns

@@ -1,4 +1,4 @@
-"""E2E UI scenarios for Architect.
+"""E2E UI scenarios for Cadre.
 
 Run:  python3 scripts/e2e/test_ui.py
 Needs a built binary (`zig build`) and a logged-in macOS GUI session — each test
@@ -8,7 +8,7 @@ launches a real window and drives it with OS input, so it briefly takes focus.
 import sys
 import time
 
-from harness import Architect, CMD
+from harness import Cadre, CMD
 
 
 def _spawned(state):
@@ -17,7 +17,7 @@ def _spawned(state):
 
 def test_startup_writes_state():
     """The probe reports a sane initial state: session 0 spawned and focused."""
-    with Architect() as app:
+    with Cadre() as app:
         s = app.wait_for(lambda s: _spawned(s) >= 1, what="session 0 to spawn")
         assert s["focused_session"] == 0, s
         assert s["sessions"][0]["spawned"] and not s["sessions"][0]["dead"], s
@@ -26,7 +26,7 @@ def test_startup_writes_state():
 
 def test_cmd_esc_enters_grid():
     """Cmd+N adds a pane; Cmd+Esc collapses to grid view."""
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
         app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="second pane")
         s = app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")
@@ -35,7 +35,7 @@ def test_cmd_esc_enters_grid():
 
 def test_grid_click_moves_focus():
     """Single-clicking a grid pane moves keyboard focus to it (the bug we hit)."""
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
         app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="2 panes")
         app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")
@@ -51,7 +51,7 @@ def test_grid_click_moves_focus():
 
 def test_cmd_w_removes_terminal():
     """Cmd+W closes a terminal; the spawned count drops and the grid compacts."""
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="first pane")
         app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="second pane")
         s = app.act_until(lambda: app.key("w", CMD), lambda s: _spawned(s) == 1, what="one pane after Cmd+W")
@@ -61,7 +61,7 @@ def test_cmd_w_removes_terminal():
 def test_cmd_click_opens_link():
     """Cmd+Click on a URL in terminal output opens that URL (recorded in test mode)."""
     url = "https://example.com"
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="terminal")
         # Fill the screen with the URL at column 0 so a click near the left edge
         # lands on it regardless of terminal width.
@@ -80,7 +80,7 @@ def test_cmd_click_opens_link():
 
 def test_cmd_return_expands_to_full():
     """From grid, Cmd+Return expands the focused pane back to full view."""
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: _spawned(s) >= 1, what="initial pane")
         app.act_until(lambda: app.key("n", CMD), lambda s: _spawned(s) >= 2, what="2 panes")
         app.act_until(lambda: app.key("esc", CMD), lambda s: s["mode"] == "Grid", what="grid mode")

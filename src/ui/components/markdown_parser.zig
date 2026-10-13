@@ -1089,7 +1089,7 @@ test "parser handles task checkboxes and markdown links" {
 
     var blocks = try parse(
         allocator,
-        "- [ ] unchecked task\n- [x] checked task\n\n[Architect](https://example.com)\n",
+        "- [ ] unchecked task\n- [x] checked task\n\n[Cadre](https://example.com)\n",
     );
     defer freeBlocks(allocator, &blocks);
 
@@ -1105,7 +1105,7 @@ test "parser handles task checkboxes and markdown links" {
     try std.testing.expectEqual(BlockKind.paragraph, blocks.items[3].kind);
     try std.testing.expectEqual(@as(usize, 1), blocks.items[3].spans.len);
     try std.testing.expectEqual(InlineStyle.link, blocks.items[3].spans[0].style);
-    try std.testing.expectEqualStrings("Architect", blocks.items[3].spans[0].text);
+    try std.testing.expectEqualStrings("Cadre", blocks.items[3].spans[0].text);
     try std.testing.expectEqualStrings("https://example.com", blocks.items[3].spans[0].href.?);
 }
 

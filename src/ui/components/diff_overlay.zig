@@ -2773,12 +2773,12 @@ pub const DiffOverlayComponent = struct {
     fn saveCommentsToFile(self: *DiffOverlayComponent) void {
         const repo_root = self.last_repo_root orelse return;
 
-        const dir_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect" }) catch return;
+        const dir_path = std.fs.path.join(self.allocator, &.{ repo_root, ".cadre" }) catch return;
         defer self.allocator.free(dir_path);
         std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
             error.PathAlreadyExists => {},
             else => {
-                log.warn("failed to create .architect dir: {}", .{err});
+                log.warn("failed to create .cadre dir: {}", .{err});
                 return;
             },
         };
@@ -2839,7 +2839,7 @@ pub const DiffOverlayComponent = struct {
 
     fn loadCommentsFromFile(self: *DiffOverlayComponent) void {
         const repo_root = self.last_repo_root orelse return;
-        const file_path = std.fs.path.join(self.allocator, &.{ repo_root, ".architect", "diff_comments.json" }) catch return;
+        const file_path = std.fs.path.join(self.allocator, &.{ repo_root, ".cadre", "diff_comments.json" }) catch return;
         defer self.allocator.free(file_path);
 
         const file = std.fs.openFileAbsolute(file_path, .{}) catch return;

@@ -4,7 +4,7 @@
 # whose top-level libSystem.tbd no longer advertises arm64-macos.
 # Upstream tracker: https://codeberg.org/ziglang/zig/issues/31756
 #
-# Remove this once Architect no longer uses Zig 0.15.2, or once Zig's Darwin
+# Remove this once Cadre no longer uses Zig 0.15.2, or once Zig's Darwin
 # SDK discovery/linker handles the arm64e-only stub layout correctly.
 
 legacy_sdk="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"

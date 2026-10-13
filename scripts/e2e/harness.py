@@ -1,8 +1,8 @@
-"""End-to-end UI test harness for Architect.
+"""End-to-end UI test harness for Cadre.
 
-Launches an isolated instance in test mode (ARCHITECT_TEST_MODE), drives it with
+Launches an isolated instance in test mode (CADRE_TEST_MODE), drives it with
 real OS input events (CoreGraphics, via ctypes — no third-party deps), and reads
-the per-frame JSON state the app writes to ARCHITECT_STATE_FILE. Tests assert on
+the per-frame JSON state the app writes to CADRE_STATE_FILE. Tests assert on
 that state: "press Cmd+Esc -> assert mode == Grid", etc.
 
 v1 drives real OS events, so the app window must be frontmost while a test runs
@@ -56,8 +56,8 @@ def _post(ev):
     _cg.CFRelease(ev)
 
 
-class Architect:
-    """A launched, test-mode Architect instance you can drive and observe."""
+class Cadre:
+    """A launched, test-mode Cadre instance you can drive and observe."""
 
     def __init__(self):
         self.dir = tempfile.mkdtemp(prefix="arch-e2e-")
@@ -65,15 +65,15 @@ class Architect:
         cfg = os.path.join(self.dir, "cfg")
         os.makedirs(cfg)
         repo = subprocess.check_output(["git", "rev-parse", "--show-toplevel"]).decode().strip()
-        binary = os.path.join(repo, "zig-out", "bin", "architect")
+        binary = os.path.join(repo, "zig-out", "bin", "cadre")
         if not os.path.exists(binary):
-            raise RuntimeError(f"architect binary not found at {binary}; run `zig build` first")
+            raise RuntimeError(f"cadre binary not found at {binary}; run `zig build` first")
         env = dict(os.environ)
-        env["ARCHITECT_TEST_MODE"] = "1"
-        env["ARCHITECT_STATE_FILE"] = self.state_file
-        env["ARCHITECT_CONFIG_DIR"] = cfg
+        env["CADRE_TEST_MODE"] = "1"
+        env["CADRE_STATE_FILE"] = self.state_file
+        env["CADRE_CONFIG_DIR"] = cfg
         self.opened_file = os.path.join(self.dir, "opened.txt")
-        env["ARCHITECT_OPENED_URLS_FILE"] = self.opened_file
+        env["CADRE_OPENED_URLS_FILE"] = self.opened_file
         self._log = open(os.path.join(self.dir, "stdout.log"), "w")
         self.proc = subprocess.Popen([binary], env=env, stdout=self._log, stderr=subprocess.STDOUT)
         self.wait_for(lambda s: s is not None, timeout=15, what="app to start and write state")

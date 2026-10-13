@@ -1,10 +1,10 @@
 //! tmux-backed session persistence (Phase 1).
 //!
-//! When enabled, Architect spawns each shell *inside* a detached tmux session so
-//! agents (claude/codex/gemini) survive an Architect restart and reattach live,
+//! When enabled, Cadre spawns each shell *inside* a detached tmux session so
+//! agents (claude/codex/gemini) survive an Cadre restart and reattach live,
 //! instead of being killed at quit and resumed from a possibly-stale local
 //! transcript (the bridged `--resume` rewind bug). The tmux server double-forks
-//! away from Architect's process tree, so quitting Architect — yours or the
+//! away from Cadre's process tree, so quitting Cadre — yours or the
 //! reload script's — only drops the client; the server + shell + agent live on.
 //!
 //! On by default: whenever tmux is on PATH, `buildPersist` wraps the shell. When
@@ -22,7 +22,7 @@ pub const Persist = struct {
     tmux_path: [:0]const u8,
     /// Private server socket, stable across restarts so reattach finds the session.
     socket_path: [:0]const u8,
-    /// Session name (`architect-<epoch>-<persist_index>`); `new-session -A` keys
+    /// Session name (`cadre-<epoch>-<persist_index>`); `new-session -A` keys
     /// off this. The index MUST be a session's stable persist_index, not its
     /// mutable grid slot_index — otherwise the name drifts as the grid reorders
     /// and a fresh spawn can attach to (clone) a live session. The <epoch> makes
@@ -40,12 +40,12 @@ pub const Persist = struct {
 /// OSC 8 hyperlink passthrough (so Cmd+Click doc links survive the tmux round
 /// trip), and sessions that outlive a detached client.
 ///
-/// `hyperlinks` in terminal-features tells tmux the OUTER terminal (Architect)
+/// `hyperlinks` in terminal-features tells tmux the OUTER terminal (Cadre)
 /// understands OSC 8, so tmux re-emits hyperlinks it parsed from the pane
 /// instead of stripping them; `allow-passthrough on` lets agents forward raw
 /// escape sequences (OSC 52 clipboard, etc.) through tmux unmodified. Verified:
 /// without `hyperlinks`, a pane's OSC 8 link is dropped before reaching
-/// Architect; with it, the link is re-emitted intact.
+/// Cadre; with it, the link is re-emitted intact.
 const conf_contents =
     \\set -g status off
     \\set -g prefix None
@@ -135,13 +135,13 @@ pub fn setEpoch(epoch: []const u8) void {
     epoch_len = n;
 }
 
-/// Build a session name `architect-<epoch>-<index>` (or the legacy
-/// `architect-<index>` when no epoch is set). Caller owns the result.
+/// Build a session name `cadre-<epoch>-<index>` (or the legacy
+/// `cadre-<index>` when no epoch is set). Caller owns the result.
 fn sessionName(allocator: std.mem.Allocator, persist_index: usize) ?[:0]u8 {
     const built = if (epoch_len == 0)
-        allocZ(allocator, "architect-{d}", .{persist_index})
+        allocZ(allocator, "cadre-{d}", .{persist_index})
     else
-        allocZ(allocator, "architect-{s}-{d}", .{ epoch_buf[0..epoch_len], persist_index });
+        allocZ(allocator, "cadre-{s}-{d}", .{ epoch_buf[0..epoch_len], persist_index });
     return built catch |err| {
         log.warn("sessionName: alloc failed for index {d}: {}", .{ persist_index, err });
         return null;
@@ -156,7 +156,7 @@ fn writeConf(path: [:0]const u8) !void {
 
 /// Re-apply the passthrough options to a server that is ALREADY running. tmux
 /// reads `-f` only when it first starts the server, so a server left over from a
-/// previous Architect launch keeps its old options (e.g. missing the hyperlinks
+/// previous Cadre launch keeps its old options (e.g. missing the hyperlinks
 /// feature) even after we rewrite the file. The next client attach negotiates
 /// these, so OSC 8 links survive without restarting the server (which would kill
 /// the agents). Best effort — on the first launch no server exists yet (no-op).
@@ -227,9 +227,9 @@ pub fn buildPersist(allocator: std.mem.Allocator, persist_index: usize) ?Persist
     errdefer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return null;
     errdefer allocator.free(socket_path);
-    const conf_path = allocZ(allocator, "{s}/architect-tmux.conf", .{dir}) catch return null;
+    const conf_path = allocZ(allocator, "{s}/cadre-tmux.conf", .{dir}) catch return null;
     errdefer allocator.free(conf_path);
     const session_name = sessionName(allocator, persist_index) orelse return null;
     errdefer allocator.free(session_name);
@@ -262,7 +262,7 @@ pub fn freePersist(allocator: std.mem.Allocator, p: Persist) void {
 /// Scroll a persistent session's history via the tmux control socket.
 ///
 /// Under persistence the shell runs full-screen *inside* tmux, so scrolled-off
-/// lines live in tmux's 50k history buffer, not Architect's ghostty-vt
+/// lines live in tmux's 50k history buffer, not Cadre's ghostty-vt
 /// scrollback — the wheel handler has nothing of its own to scroll. So drive
 /// tmux copy-mode out-of-band: `copy-mode -e` enters it (idempotent; the `-e`
 /// flag auto-exits when scrolled back to the bottom) and `send-keys -X -N <n>
@@ -281,7 +281,7 @@ pub fn scrollHistory(allocator: std.mem.Allocator, persist_index: usize, lines: 
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
@@ -314,7 +314,7 @@ pub fn cancelCopyMode(allocator: std.mem.Allocator, persist_index: usize) void {
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
@@ -330,7 +330,7 @@ pub fn cancelCopyMode(allocator: std.mem.Allocator, persist_index: usize) void {
 
 /// Whether the persistent session's tmux pane is running a real command (an
 /// agent/program), not just an idle shell. The quit-confirmation check can't see
-/// this through Architect's PTY foreground pgrp — for a tmux-backed pane that's
+/// this through Cadre's PTY foreground pgrp — for a tmux-backed pane that's
 /// always the tmux client, never the agent — so it asks tmux directly via
 /// `#{pane_current_command}`. Best-effort: returns false if tmux can't be queried.
 pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, persist_index: usize) bool {
@@ -338,7 +338,7 @@ pub fn paneHasForegroundCommand(allocator: std.mem.Allocator, persist_index: usi
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return false;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return false;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return false;
     defer allocator.free(target);
@@ -370,7 +370,7 @@ fn paneDisplay(allocator: std.mem.Allocator, persist_index: usize, format: []con
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return null;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return null;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return null;
     defer allocator.free(target);
@@ -406,7 +406,7 @@ pub fn panePath(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     return paneDisplay(allocator, persist_index, "#{pane_current_path}");
 }
 
-/// Remove ARCHITECT_RESUME_CMD from the tmux server's GLOBAL environment.
+/// Remove CADRE_RESUME_CMD from the tmux server's GLOBAL environment.
 /// The server captures the env of whichever client happened to start it —
 /// including that pane's resume command — and sessions inherit any global
 /// they don't override, so a brand-new terminal could run a stale
@@ -418,11 +418,11 @@ pub fn scrubStaleGlobalEnv(allocator: std.mem.Allocator) void {
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
 
     var child = std.process.Child.init(&[_][]const u8{
-        tmux_path, "-S", socket_path, "set-environment", "-g", "-u", "ARCHITECT_RESUME_CMD",
+        tmux_path, "-S", socket_path, "set-environment", "-g", "-u", "CADRE_RESUME_CMD",
     }, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
@@ -456,7 +456,7 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
@@ -494,7 +494,7 @@ pub fn killSession(allocator: std.mem.Allocator, persist_index: usize) void {
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
     const target = sessionName(allocator, persist_index) orelse return;
     defer allocator.free(target);
@@ -540,14 +540,14 @@ const ReapVerdict = enum {
 
 /// Decide the fate of a DETACHED session. `keep` holds persist indices that
 /// must survive; `reap_same_epoch` is false when the caller can't vouch for
-/// the full index set. Different-epoch (or pre-epoch) architect names are
+/// the full index set. Different-epoch (or pre-epoch) cadre names are
 /// always fossils: their run can never reattach to them again.
 fn classifyDetachedSession(name: []const u8, epoch: []const u8, keep: []const usize, reap_same_epoch: bool) ReapVerdict {
-    if (!std.mem.startsWith(u8, name, "architect-")) return .spare_foreign;
+    if (!std.mem.startsWith(u8, name, "cadre-")) return .spare_foreign;
     if (epoch.len == 0) return .reap; // epoch unset: everything is legacy
 
     var prefix_buf: [96]u8 = undefined;
-    const prefix = std.fmt.bufPrint(&prefix_buf, "architect-{s}-", .{epoch}) catch return .spare_same_epoch;
+    const prefix = std.fmt.bufPrint(&prefix_buf, "cadre-{s}-", .{epoch}) catch return .spare_same_epoch;
     if (!std.mem.startsWith(u8, name, prefix)) return .reap; // other/pre-epoch fossil
 
     const index = std.fmt.parseInt(usize, name[prefix.len..], 10) catch return .spare_same_epoch;
@@ -572,7 +572,7 @@ pub fn reapDetachedSessions(allocator: std.mem.Allocator, keep: []const usize, r
     defer allocator.free(tmux_path);
 
     const dir = runtimeDir();
-    const socket_path = allocZ(allocator, "{s}/architect-tmux.sock", .{dir}) catch return;
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{dir}) catch return;
     defer allocator.free(socket_path);
 
     // One line per session: "<attached> <name>". No server yet => non-zero exit.
@@ -630,19 +630,19 @@ test "classifyDetachedSession: keep set, epochs, malformed names" {
     const keep = [_]usize{ 0, 141 };
 
     // Same epoch, protected index -> spared even when same-epoch reaping is on.
-    try std.testing.expectEqual(ReapVerdict.spare_kept, classifyDetachedSession("architect-abc123-141", epoch, &keep, true));
+    try std.testing.expectEqual(ReapVerdict.spare_kept, classifyDetachedSession("cadre-abc123-141", epoch, &keep, true));
     // Same epoch, unprotected index -> fair game only with full index info.
-    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-abc123-7", epoch, &keep, true));
-    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("architect-abc123-7", epoch, &keep, false));
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("cadre-abc123-7", epoch, &keep, true));
+    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("cadre-abc123-7", epoch, &keep, false));
     // Different epoch or legacy pre-epoch name -> always a fossil.
-    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-deadbeef-3", epoch, &keep, false));
-    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-3", epoch, &keep, false));
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("cadre-deadbeef-3", epoch, &keep, false));
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("cadre-3", epoch, &keep, false));
     // Same-epoch prefix with a malformed index -> keep (can't reason about it).
-    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("architect-abc123-x", epoch, &keep, true));
+    try std.testing.expectEqual(ReapVerdict.spare_same_epoch, classifyDetachedSession("cadre-abc123-x", epoch, &keep, true));
     // Not ours at all.
     try std.testing.expectEqual(ReapVerdict.spare_foreign, classifyDetachedSession("some-other-session", epoch, &keep, true));
-    // Epoch unset (legacy install): old behavior, reap any architect session.
-    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("architect-3", "", &keep, false));
+    // Epoch unset (legacy install): old behavior, reap any cadre session.
+    try std.testing.expectEqual(ReapVerdict.reap, classifyDetachedSession("cadre-3", "", &keep, false));
 }
 
 /// tmux's `pane_current_command` for an idle pane is the shell name (e.g. "zsh");

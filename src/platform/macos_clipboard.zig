@@ -1,7 +1,7 @@
 // macOS clipboard image detection.
 //
 // Used by the Cmd+V image-passthrough feature: when the general pasteboard
-// holds image data (a screenshot, a copied PNG/TIFF, etc.), Architect forwards
+// holds image data (a screenshot, a copied PNG/TIFF, etc.), Cadre forwards
 // Ctrl+V to the focused terminal so a CLI like Claude Code performs its own
 // inline image paste, instead of pasting clipboard text.
 //

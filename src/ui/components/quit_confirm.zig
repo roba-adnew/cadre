@@ -294,7 +294,7 @@ pub const QuitConfirmComponent = struct {
         if (self.title_tex) |tex| c.SDL_DestroyTexture(tex);
         if (self.message_tex) |tex| c.SDL_DestroyTexture(tex);
 
-        const title_text = "Closing Architect";
+        const title_text = "Closing Cadre";
         const fg = theme.foreground;
         const title_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const title_surface = c.TTF_RenderText_Blended(title_font, title_text, title_text.len, title_color) orelse return error.SurfaceFailed;

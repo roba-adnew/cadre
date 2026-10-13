@@ -33,12 +33,12 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
-      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/cadre/.zig-cache
+      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/cadre/.zig-cache/local
     steps:
       - uses: actions/checkout@v7
         with:
-          path: architect
+          path: cadre
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -49,8 +49,8 @@ jobs:
       - name: Cache Zig package cache
         uses: actions/cache@v5
         with:
-          path: architect/.zig-cache
-          key: zig-${{ runner.os }}-${{ hashFiles('architect/build.zig.zon') }}
+          path: cadre/.zig-cache
+          key: zig-${{ runner.os }}-${{ hashFiles('cadre/build.zig.zon') }}
           restore-keys: |
             zig-${{ runner.os }}-
 
@@ -67,7 +67,7 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
       - name: Build
         run: |
@@ -76,7 +76,7 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
       - name: Test
         run: |
@@ -85,7 +85,7 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
       - name: Lint
         run: |
@@ -94,7 +94,7 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
   build:
     name: build

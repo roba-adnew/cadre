@@ -28,7 +28,7 @@ const GridLayout = grid_layout.GridLayout;
 const attention_thickness: c_int = 3;
 
 /// Set once per frame at the top of render(); read by the overlay helpers so the
-/// selected pane's border is solid when Architect is focused and dashed when it's
+/// selected pane's border is solid when Cadre is focused and dashed when it's
 /// in the background. Frame-scoped render state, not persisted UI state.
 var frame_window_focused: bool = true;
 pub const terminal_padding: c_int = 8;
@@ -332,7 +332,7 @@ pub fn render(
         },
     }
 
-    // App-focus indicator: when Architect is NOT the frontmost app, outline the
+    // App-focus indicator: when Cadre is NOT the frontmost app, outline the
     // selected pane (the whole window in Full view) with a dashed accent border.
     // Solid border = focused; dashed = app in the background. Drawn fresh on top
     // every frame so it tracks focus immediately. inactive_overlay_alpha gates it
@@ -742,7 +742,7 @@ fn renderSessionOverlays(
         }
 
         if (is_focused and frame_window_focused) {
-            // Selected pane while Architect is focused: solid accent border. When
+            // Selected pane while Cadre is focused: solid accent border. When
             // the app is backgrounded, render() draws a dashed accent border here
             // instead, so this solid one is suppressed to avoid doubling up.
             const focus_accent = theme.accent;

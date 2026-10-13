@@ -1,14 +1,14 @@
 # Configuration
 
-Architect stores its configuration in `~/.config/architect/` using two TOML files with distinct purposes:
+Cadre stores its configuration in `~/.config/cadre/` using two TOML files with distinct purposes:
 
 | File | Purpose | Managed by |
 |------|---------|------------|
 | `config.toml` | User preferences (theme, font, grid size) | User (via `Cmd+,`) |
 | `persistence.toml` | Runtime state (window position, font size, terminal cwds) | Application |
 
-Set `ARCHITECT_CONFIG_DIR` to relocate **both** files to a different directory
-(it overrides `~/.config/architect/`). This is how an isolated dev instance keeps
+Set `CADRE_CONFIG_DIR` to relocate **both** files to a different directory
+(it overrides `~/.config/cadre/`). This is how an isolated dev instance keeps
 its own state without resuming or clobbering the daily app's sessions — see
 `scripts/dev-instance.sh` in `docs/development.md`.
 
@@ -16,41 +16,41 @@ its own state without resuming or clobbering the daily app's sessions — see
 
 | Variable | Effect |
 |----------|--------|
-| `ARCHITECT_CONFIG_DIR` | Relocates `config.toml` + `persistence.toml` to the given directory (overrides `~/.config/architect/`). |
+| `CADRE_CONFIG_DIR` | Relocates `config.toml` + `persistence.toml` to the given directory (overrides `~/.config/cadre/`). |
 
 ### Persistent agent sessions
 
-On by default (experimental): whenever `tmux` is on `PATH`, Architect spawns each
+On by default (experimental): whenever `tmux` is on `PATH`, Cadre spawns each
 shell inside a detached **tmux** session instead of as a direct child process. The
-tmux server outlives Architect, so quitting and relaunching Architect — or a crash,
+tmux server outlives Cadre, so quitting and relaunching Cadre — or a crash,
 or the reload script — reattaches to the *same live shell* with the agent's full
 in-memory context intact, instead of killing the agent and resuming it from a
 local transcript that can be stale (the bridged-resume "rewind"). See ADR-015 in
 `docs/ARCHITECTURE.md` for the full design.
 
 - **State location:** a private tmux socket and config live in
-  `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock` and `…/architect-tmux.conf`.
-  Sessions are named `architect-<epoch>-<n>`, where `<epoch>` is a random
+  `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cadre-tmux.sock` and `…/cadre-tmux.conf`.
+  Sessions are named `cadre-<epoch>-<n>`, where `<epoch>` is a random
   per-install token (`persist_epoch` in `persistence.toml`) that keeps this
   install's session names disjoint from other installs' and from older fossils on
   the shared socket. List them with `tmux -S <socket> ls`; kill a stuck one with
-  `tmux -S <socket> kill-session -t architect-<epoch>-<n>`. At startup Architect
+  `tmux -S <socket> kill-session -t cadre-<epoch>-<n>`. At startup Cadre
   reattaches to its own sessions and then reaps every remaining *detached* session
   on the socket, so leftovers from crashes or closed terminals don't accumulate.
-- **Automatic fallback:** if `tmux` isn't installed, Architect spawns a direct
+- **Automatic fallback:** if `tmux` isn't installed, Cadre spawns a direct
   shell exactly as before — no configuration needed.
 - **Known limitations (phase 1):** the attention/approval border may not light up
   on a *reattached* agent; deep scrollback above the visible screen is not
   reconstructed on reattach (the conversation state is intact); a full machine
   reboot loses the live session and falls back to a fresh shell; and only one
-  persistence-enabled Architect instance should run at a time (the socket and
+  persistence-enabled Cadre instance should run at a time (the socket and
   session names are shared per user).
 
 ## config.toml
 
 User-editable preferences file. Changes take effect on next launch. Open it quickly with `Cmd+,`.
 
-If the file doesn't exist, Architect creates a commented template on first run (written atomically).
+If the file doesn't exist, Cadre creates a commented template on first run (written atomically).
 
 ### Font Configuration
 
@@ -168,10 +168,10 @@ enable_animations = true     # Enable expand/collapse animations (default: true)
 ```toml
 [notifications]
 sound = true  # Play a macOS system chime when an agent needs approval or
-              # finishes, while Architect is in the background (default: true)
+              # finishes, while Cadre is in the background (default: true)
 ```
 
-The chime only plays when Architect is **not** the frontmost app — when it's
+The chime only plays when Cadre is **not** the frontmost app — when it's
 focused, the pulsing pane border is the signal instead. Distinct sounds are used
 for "needs approval" (Ping) and "done" (Glass). macOS only; set `sound = false`
 to silence.
@@ -210,12 +210,12 @@ Metrics collection has zero overhead when disabled (no allocations, null pointer
 min_level = "info"  # One of: err, warn, info, debug (case-insensitive)
 ```
 
-Architect writes structured application logs to:
-- macOS: `~/Library/Logs/Architect/architect.log`
+Cadre writes structured application logs to:
+- macOS: `~/Library/Logs/Cadre/cadre.log`
 
 Each log line uses local time with an explicit timezone offset (for example, `2026-03-08T14:23:00+01:00`).
 
-Logs rotate by size. When `architect.log` exceeds 10 MiB, it is archived to a timestamped file (for example, `architect-20260306T143000Z.log`) and a new active log file is created.
+Logs rotate by size. When `cadre.log` exceeds 10 MiB, it is archived to a timestamped file (for example, `cadre-20260306T143000Z.log`) and a new active log file is created.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -227,25 +227,25 @@ Event markers (startup/shutdown and grid/full view transitions) are always recor
 
 ```toml
 [worktree]
-directory = "~/.architect-worktrees"  # Base directory for new worktrees
+directory = "~/.cadre-worktrees"  # Base directory for new worktrees
 init_command = "script/setup"         # Command to run after creating a worktree
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `directory` | `~/.architect-worktrees` | Base directory where new worktrees are created. Each repo gets a subdirectory mirroring its path relative to `$HOME`, and each worktree is a subdirectory within that. Supports `~` expansion. Relative paths are resolved against `$HOME`. |
-| `init_command` | *(auto-detect)* | Shell command to run in the new worktree after creation. When not set, Architect automatically runs `script/setup` or `.architect-init.sh` if either exists and is executable. |
+| `directory` | `~/.cadre-worktrees` | Base directory where new worktrees are created. Each repo gets a subdirectory mirroring its path relative to `$HOME`, and each worktree is a subdirectory within that. Supports `~` expansion. Relative paths are resolved against `$HOME`. |
+| `init_command` | *(auto-detect)* | Shell command to run in the new worktree after creation. When not set, Cadre automatically runs `script/setup` or `.cadre-init.sh` if either exists and is executable. |
 
-New worktrees are created at `<directory>/<repo-subpath>/<worktree-name>`, where `<repo-subpath>` is the repo's path relative to `$HOME`. For example, if the repo is at `~/dev/myproject`, creating a worktree called `feature-x` produces `~/.architect-worktrees/dev/myproject/feature-x`.
+New worktrees are created at `<directory>/<repo-subpath>/<worktree-name>`, where `<repo-subpath>` is the repo's path relative to `$HOME`. For example, if the repo is at `~/dev/myproject`, creating a worktree called `feature-x` produces `~/.cadre-worktrees/dev/myproject/feature-x`.
 
 Creating worktrees outside the repository tree prevents agents (Claude Code, Codex, etc.) from discovering the parent repository's configuration files when traversing up the directory tree.
 
-Existing worktrees (including legacy ones under `.architect/` inside the repo) remain visible in the worktree picker and can be switched to or removed normally.
+Existing worktrees (including legacy ones under `.cadre/` inside the repo) remain visible in the worktree picker and can be switched to or removed normally.
 
 ### Complete Example
 
 ```toml
-# ~/.config/architect/config.toml
+# ~/.config/cadre/config.toml
 
 [font]
 family = "JetBrains Mono"
@@ -292,7 +292,7 @@ enabled = false
 min_level = "info"
 
 [worktree]
-# directory = "~/.architect-worktrees"
+# directory = "~/.cadre-worktrees"
 # init_command = "script/setup"
 ```
 
@@ -338,20 +338,20 @@ y = 50
 | Field | Description |
 |-------|-------------|
 | `font_size` | Current font size (adjusted with `Cmd++`/`Cmd+-`) |
-| `persist_epoch` | Random per-install token (16 hex chars) minted on first launch and mixed into tmux session names (`architect-<epoch>-<n>`) so this install never reattaches to another install's — or an old fossil's — session on the shared socket. Do not edit; deleting it just mints a fresh one (and abandons the current run's live tmux sessions). |
+| `persist_epoch` | Random per-install token (16 hex chars) minted on first launch and mixed into tmux session names (`cadre-<epoch>-<n>`) so this install never reattaches to another install's — or an old fossil's — session on the shared socket. Do not edit; deleting it just mints a fresh one (and abandons the current run's live tmux sessions). |
 | `terminals` | Working directories for each terminal. Array position is the grid display order — creation order until you drag-reorder tiles, after which the user's arrangement is what round-trips across restarts. |
 | `terminal_agent_types` | Agent type for each terminal slot (`"claude"`, `"codex"`, `"gemini"`), or an empty string (`""`) when absent. Present only when at least one terminal had a running agent at quit time. |
-| `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Architect writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
-| `terminal_persist_indices` | Each terminal's tmux identity (`architect-<epoch>-<index>`), so a restored terminal reattaches to its own live session instead of one derived from its grid position. `-1` = unknown. Absent in older files: terminals then reattach by position, and same-epoch graveyard sessions are spared for that one launch. |
+| `terminal_session_ids` | Session UUID for each terminal slot, or an empty string (`""`) when absent. Written alongside `terminal_agent_types` when an agent session ID was captured at quit. On next launch, Cadre writes the corresponding resume command (e.g., `claude --resume <uuid>`) to the terminal as soon as the shell is ready. |
+| `terminal_persist_indices` | Each terminal's tmux identity (`cadre-<epoch>-<index>`), so a restored terminal reattaches to its own live session instead of one derived from its grid position. `-1` = unknown. Absent in older files: terminals then reattach by position, and same-epoch graveyard sessions are spared for that one launch. |
 | `terminal_hidden` | Per-terminal boolean: `true` for terminals hidden from the grid (⌘J) at quit time, restored as spawned-but-hidden (revealed via ⌘⇧J). Present only when at least one terminal is hidden; absent means all visible. |
 | `[window]` | Last window position and dimensions |
 | `[recent_folders]` | Directory visit counts (up to 10 entries, sorted by frequency for `Cmd+O` overlay) |
 | `grid_font_scale` | Last grid-view font zoom multiplier (`Cmd+Opt +/-`); global fallback when a grid shape has no saved preset |
 | `[grid_font_presets]` | Per-grid-shape font zoom, keyed by `"<cols>x<rows>"` — each grid shape remembers its own `Cmd+Opt` zoom across relaunches (grid text is rendered crisply at that scale's native size) |
 
-On launch, Architect restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Architect was last closed, the agent is automatically resumed.
+On launch, Cadre restores terminals to their saved working directories. The grid automatically resizes to fit the number of restored terminals. If a terminal had an AI agent running when Cadre was last closed, the agent is automatically resumed.
 
-`persistence.toml` is written atomically (temp file + replace), so updates never leave a partially written file. Architect updates it during runtime when state changes (window move/resize, font size, terminal cwd changes, terminal spawn/despawn) and performs a final save during shutdown.
+`persistence.toml` is written atomically (temp file + replace), so updates never leave a partially written file. Cadre updates it during runtime when state changes (window move/resize, font size, terminal cwd changes, terminal spawn/despawn) and performs a final save during shutdown.
 
 Note: Terminal cwd persistence and agent session resumption are currently macOS-only.
 
@@ -362,12 +362,12 @@ Older `persistence.toml` files that used the `[terminals]` table or `recent_fold
 Delete the configuration files to reset to defaults:
 
 ```bash
-rm ~/.config/architect/config.toml      # Reset preferences
-rm ~/.config/architect/persistence.toml # Reset runtime state
+rm ~/.config/cadre/config.toml      # Reset preferences
+rm ~/.config/cadre/persistence.toml # Reset runtime state
 ```
 
 Or remove the entire directory:
 
 ```bash
-rm -rf ~/.config/architect
+rm -rf ~/.config/cadre
 ```

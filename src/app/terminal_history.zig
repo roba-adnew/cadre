@@ -154,7 +154,7 @@ fn matchUuidAt(text: []const u8, start: usize) ?[]const u8 {
 }
 
 /// Builds the shell command to resume an agent session (no trailing newline). It is injected
-/// as ARCHITECT_RESUME_CMD and `eval`'d by the wrapper rc after the user's shell rc loads —
+/// as CADRE_RESUME_CMD and `eval`'d by the wrapper rc after the user's shell rc loads —
 /// not typed into the PTY — so it can't be eaten by a startup prompt. Caller owns the
 /// returned slice and must free it.
 pub fn buildResumeCommand(allocator: std.mem.Allocator, agent_kind: AgentKind, session_id: []const u8) ![]u8 {

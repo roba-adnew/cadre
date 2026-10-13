@@ -61,13 +61,13 @@ fn openThread(ctx: *ThreadContext) void {
     };
 }
 
-/// In E2E test mode (ARCHITECT_TEST_MODE + ARCHITECT_OPENED_URLS_FILE), append the
+/// In E2E test mode (CADRE_TEST_MODE + CADRE_OPENED_URLS_FILE), append the
 /// opened target to that file (one per line) instead of launching a real opener,
 /// so tests can assert what was opened without spawning a browser. Returns true
 /// when handled; a complete no-op in production (env vars unset).
 fn recordOpenForTest(target: []const u8) bool {
-    if (std.posix.getenv("ARCHITECT_TEST_MODE") == null) return false;
-    const path = std.posix.getenv("ARCHITECT_OPENED_URLS_FILE") orelse return false;
+    if (std.posix.getenv("CADRE_TEST_MODE") == null) return false;
+    const path = std.posix.getenv("CADRE_OPENED_URLS_FILE") orelse return false;
     appendLine(path, target) catch |err| {
         log.warn("failed to record opened target for test: {}", .{err});
     };

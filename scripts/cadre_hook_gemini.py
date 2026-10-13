@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Gemini CLI hook wrapper for Architect notifications.
+Gemini CLI hook wrapper for Cadre notifications.
 
 Gemini hooks receive JSON via stdin and must output JSON to stdout.
-This wrapper consumes stdin, calls Architect notify, and returns valid JSON.
+This wrapper consumes stdin, calls Cadre notify, and returns valid JSON.
 """
 
 import json
@@ -30,16 +30,16 @@ def main() -> int:
 
         state = sys.argv[1]
 
-        # Prefer built-in architect command when available, fall back to script.
-        architect_cmd = shutil.which("architect")
-        if architect_cmd:
+        # Prefer built-in cadre command when available, fall back to script.
+        cadre_cmd = shutil.which("cadre")
+        if cadre_cmd:
             subprocess.run(
-                [architect_cmd, "notify", state],
+                [cadre_cmd, "notify", state],
                 check=False,
                 capture_output=True,
             )
         else:
-            script_path = os.path.join(os.path.dirname(__file__), "architect_notify.py")
+            script_path = os.path.join(os.path.dirname(__file__), "cadre_notify.py")
             subprocess.run(
                 ["python3", script_path, state],
                 check=False,

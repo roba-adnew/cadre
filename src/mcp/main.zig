@@ -3,7 +3,7 @@ const control = @import("control");
 
 const log = std.log.scoped(.mcp);
 const protocol_version = "2025-11-25";
-const server_name = "architect-mcp";
+const server_name = "cadre-mcp";
 const server_version = "0.1.0";
 const tool_name = "spawn_session";
 const close_tool_name = "close_session";
@@ -167,9 +167,9 @@ fn handleSpawnToolCall(
 
     var response = control.connectAndSendSpawnRequest(allocator, request) catch |err| {
         var message_buf: [160]u8 = undefined;
-        const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
-            log.debug("failed to format Architect contact error: {}", .{fmt_err});
-            break :blk "failed to contact Architect";
+        const message = std.fmt.bufPrint(&message_buf, "failed to contact Cadre: {}", .{err}) catch |fmt_err| blk: {
+            log.debug("failed to format Cadre contact error: {}", .{fmt_err});
+            break :blk "failed to contact Cadre";
         };
         try writeToolFailure(allocator, stdout_file, id_value, .app_not_running, message);
         return;
@@ -205,9 +205,9 @@ fn handleCloseToolCall(
 
     var response = control.connectAndSendCloseRequest(allocator, request) catch |err| {
         var message_buf: [160]u8 = undefined;
-        const message = std.fmt.bufPrint(&message_buf, "failed to contact Architect: {}", .{err}) catch |fmt_err| blk: {
-            log.debug("failed to format Architect contact error: {}", .{fmt_err});
-            break :blk "failed to contact Architect";
+        const message = std.fmt.bufPrint(&message_buf, "failed to contact Cadre: {}", .{err}) catch |fmt_err| blk: {
+            log.debug("failed to format Cadre contact error: {}", .{fmt_err});
+            break :blk "failed to contact Cadre";
         };
         try writeToolFailure(allocator, stdout_file, id_value, .app_not_running, message);
         return;
@@ -290,7 +290,7 @@ fn writeSpawnSessionTool(json: *std.json.Stringify) !void {
     try json.objectField("name");
     try json.write(tool_name);
     try json.objectField("description");
-    try json.write("Ask the running Architect app to create a terminal session in a working directory.");
+    try json.write("Ask the running Cadre app to create a terminal session in a working directory.");
     try json.objectField("inputSchema");
     try writeSpawnInputSchema(json);
     try json.objectField("outputSchema");
@@ -316,7 +316,7 @@ fn writeSpawnInputSchema(json: *std.json.Stringify) !void {
     try json.objectField("type");
     try json.write("string");
     try json.objectField("description");
-    try json.write("Absolute working directory for the new Architect terminal session.");
+    try json.write("Absolute working directory for the new Cadre terminal session.");
     try json.endObject();
 
     try json.objectField("command");
@@ -324,7 +324,7 @@ fn writeSpawnInputSchema(json: *std.json.Stringify) !void {
     try json.objectField("type");
     try json.write("string");
     try json.objectField("description");
-    try json.write("Optional command text queued into the new shell. Architect appends a newline when needed.");
+    try json.write("Optional command text queued into the new shell. Cadre appends a newline when needed.");
     try json.endObject();
 
     try json.objectField("display_name");
@@ -332,7 +332,7 @@ fn writeSpawnInputSchema(json: *std.json.Stringify) !void {
     try json.objectField("type");
     try json.write("string");
     try json.objectField("description");
-    try json.write("Optional display label reserved for clients and future Architect UI.");
+    try json.write("Optional display label reserved for clients and future Cadre UI.");
     try json.endObject();
 
     try json.endObject();
@@ -389,7 +389,7 @@ fn writeCloseSessionTool(json: *std.json.Stringify) !void {
     try json.objectField("name");
     try json.write(close_tool_name);
     try json.objectField("description");
-    try json.write("Ask the running Architect app to close a terminal session and reclaim its grid slot.");
+    try json.write("Ask the running Cadre app to close a terminal session and reclaim its grid slot.");
     try json.objectField("inputSchema");
     try writeCloseInputSchema(json);
     try json.objectField("outputSchema");
@@ -482,7 +482,7 @@ fn writeToolSuccess(
     try json.objectField("type");
     try json.write("text");
     try json.objectField("text");
-    try json.print("\"Spawned Architect session {d} in slot {d}.\"", .{ success.session_id, success.slot_index });
+    try json.print("\"Spawned Cadre session {d} in slot {d}.\"", .{ success.session_id, success.slot_index });
     try json.endObject();
     try json.endArray();
     try json.objectField("structuredContent");
@@ -518,7 +518,7 @@ fn writeCloseToolSuccess(
     try json.objectField("type");
     try json.write("text");
     try json.objectField("text");
-    try json.print("\"Closed Architect session {d}.\"", .{success.session_id});
+    try json.print("\"Closed Cadre session {d}.\"", .{success.session_id});
     try json.endObject();
     try json.endArray();
     try json.objectField("structuredContent");

@@ -8,7 +8,7 @@ const log = std.log.scoped(.control);
 pub const max_message_bytes: usize = 64 * 1024;
 const max_cwd_bytes: usize = 4096;
 const max_command_bytes: usize = 16 * 1024;
-const discovery_file_prefix = "architect_control_";
+const discovery_file_prefix = "cadre_control_";
 const discovery_file_suffix = ".json";
 const control_request_read_timeout_ms: i64 = 2000;
 
@@ -334,7 +334,7 @@ pub fn getControlSocketPath(allocator: std.mem.Allocator) ![:0]u8 {
     try ensureControlRuntimeDir(base);
 
     const pid = std.c.getpid();
-    const socket_name = try std.fmt.allocPrint(allocator, "architect_control_{d}.sock", .{pid});
+    const socket_name = try std.fmt.allocPrint(allocator, "cadre_control_{d}.sock", .{pid});
     defer allocator.free(socket_name);
     return try std.fs.path.joinZ(allocator, &.{ base.path, socket_name });
 }
@@ -376,12 +376,12 @@ fn controlRuntimeDirAlloc(allocator: std.mem.Allocator) !ControlRuntimeDir {
 fn fallbackControlRuntimeDirAlloc(allocator: std.mem.Allocator) ![]u8 {
     if (std.posix.getenv("HOME")) |home| {
         if (builtin.os.tag == .macos) {
-            return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "Architect", "runtime" });
+            return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "Cadre", "runtime" });
         }
-        return try std.fs.path.join(allocator, &.{ home, ".cache", "architect", "runtime" });
+        return try std.fs.path.join(allocator, &.{ home, ".cache", "cadre", "runtime" });
     }
 
-    return try std.fmt.allocPrint(allocator, "/tmp/architect-{d}", .{posix.getuid()});
+    return try std.fmt.allocPrint(allocator, "/tmp/cadre-{d}", .{posix.getuid()});
 }
 
 fn ensureControlRuntimeDir(runtime_dir: ControlRuntimeDir) !void {
@@ -961,8 +961,8 @@ pub fn connectAndSendSpawnRequest(
     request: SpawnRequest,
 ) !OwnedSpawnResponse {
     var connection = connectToNewestControlSocket(allocator) catch |err| switch (err) {
-        error.NoControlDiscoveryFile => return staticFailure(.app_not_running, "Architect is not running"),
-        error.NoLiveControlSocket => return staticFailure(.app_not_running, "Architect is not accepting control requests"),
+        error.NoControlDiscoveryFile => return staticFailure(.app_not_running, "Cadre is not running"),
+        error.NoLiveControlSocket => return staticFailure(.app_not_running, "Cadre is not accepting control requests"),
         else => return err,
     };
     defer connection.deinit(allocator);
@@ -981,8 +981,8 @@ pub fn connectAndSendCloseRequest(
     request: CloseRequest,
 ) !OwnedCloseResponse {
     var connection = connectToNewestControlSocket(allocator) catch |err| switch (err) {
-        error.NoControlDiscoveryFile => return staticCloseFailure(.app_not_running, "Architect is not running"),
-        error.NoLiveControlSocket => return staticCloseFailure(.app_not_running, "Architect is not accepting control requests"),
+        error.NoControlDiscoveryFile => return staticCloseFailure(.app_not_running, "Cadre is not running"),
+        error.NoLiveControlSocket => return staticCloseFailure(.app_not_running, "Cadre is not accepting control requests"),
         else => return err,
     };
     defer connection.deinit(allocator);
@@ -1277,8 +1277,8 @@ test "control discovery file names are scoped to the current user and process" {
     defer allocator.free(file_name);
 
     try std.testing.expect(isOwnControlDiscoveryFileName(file_name, prefix));
-    try std.testing.expect(!isOwnControlDiscoveryFileName("architect_control.json", prefix));
-    try std.testing.expect(!isOwnControlDiscoveryFileName("not_architect_control_1_2.json", prefix));
+    try std.testing.expect(!isOwnControlDiscoveryFileName("cadre_control.json", prefix));
+    try std.testing.expect(!isOwnControlDiscoveryFileName("not_cadre_control_1_2.json", prefix));
 }
 
 test "fallback control runtime directory does not use TMPDIR" {
@@ -1287,7 +1287,7 @@ test "fallback control runtime directory does not use TMPDIR" {
     const path = try fallbackControlRuntimeDirAlloc(allocator);
     defer allocator.free(path);
 
-    try std.testing.expect(std.mem.indexOf(u8, path, "architect") != null);
+    try std.testing.expect(std.mem.indexOf(u8, path, "cadre") != null);
     try std.testing.expect(std.mem.indexOf(u8, path, "nix-shell.") == null);
 }
 

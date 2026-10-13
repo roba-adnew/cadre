@@ -115,7 +115,7 @@ pub const HiddenSwitcherComponent = struct {
     }
 
     /// Empty `q` matches all; otherwise matches the folder or the agent name
-    /// (case-insensitive substring), so typing "claude" or "architect" both work.
+    /// (case-insensitive substring), so typing "claude" or "cadre" both work.
     fn matchesQuery(info: types.SessionUiInfo, q: []const u8) bool {
         if (q.len == 0) return true;
         if (search_utils.findCaseInsensitive(basenameOf(info), q, 0) != null) return true;
@@ -444,7 +444,7 @@ fn drawTextRight(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font: 
 
 const test_sessions = [_]types.SessionUiInfo{
     .{ .dead = false, .spawned = true, .hidden = false, .cwd_basename = "visible" }, // 0
-    .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "architect", .agent_name = "claude" }, // 1
+    .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "cadre", .agent_name = "claude" }, // 1
     .{ .dead = false, .spawned = false, .hidden = true, .cwd_basename = "dead" }, // 2: not spawned
     .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "cacha" }, // 3: no agent
 };
@@ -470,12 +470,12 @@ test "collectHidden filters by agent name too" {
     var buf: [max_entries]usize = undefined;
     const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "claude", &buf);
     try std.testing.expectEqual(@as(usize, 1), n);
-    try std.testing.expectEqual(@as(usize, 1), buf[0]); // architect runs claude
+    try std.testing.expectEqual(@as(usize, 1), buf[0]); // cadre runs claude
 }
 
 test "rowLabel is title.folder, or folder alone without a title" {
     var buf: [288]u8 = undefined;
-    try std.testing.expectEqualStrings("claude.architect", HiddenSwitcherComponent.rowLabel(test_sessions[1], &buf));
+    try std.testing.expectEqualStrings("claude.cadre", HiddenSwitcherComponent.rowLabel(test_sessions[1], &buf));
     try std.testing.expectEqualStrings("cacha", HiddenSwitcherComponent.rowLabel(test_sessions[3], &buf));
 }
 

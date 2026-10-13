@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-27
 **Question:** Are terminals preserved across a **full device restart** (OS reboot),
-to the same observable state as an Architect **app-restart**?
+to the same observable state as an Cadre **app-restart**?
 **Scope:** design review of the reboot *restore* path (ADR-015 tmux persistence),
 plus the targeted fixes it surfaced.
 
@@ -47,9 +47,9 @@ disk** when the power cuts — a reboot gives no chance to scrape it at shutdown
 
 1. **[Critical — fixed] Resume id was only reliably captured if a hook was
    manually installed.** The id reaches `persistence.toml` live via Claude's
-   `SessionStart` hook (`architect agent-session` → notify socket →
+   `SessionStart` hook (`cadre agent-session` → notify socket →
    `.agent_session` handler → per-frame save). That hook was installed **only**
-   by the user running `architect hook claude` by hand; nothing auto-installed
+   by the user running `cadre hook claude` by hand; nothing auto-installed
    it. Without it, the id was captured only at graceful quit — which a reboot
    skips — so every terminal returned as a bare shell in the right cwd with **no
    conversation**. This is the difference between "looks preserved" and "is
@@ -70,7 +70,7 @@ disk** when the power cuts — a reboot gives no chance to scrape it at shutdown
 
 - **Auto-install Claude's hooks at startup** (`shell.ensureClaudeHookInstalled`,
   called before the restore spawns so this run's agents get the hook too). It
-  runs the idempotent `architect hook claude`; best-effort — on any failure it
+  runs the idempotent `cadre hook claude`; best-effort — on any failure it
   warns and the launch continues. The installer was also hardened to **create a
   fresh `~/.claude/settings.json` when none exists** (previously it failed) while
   still **refusing to clobber a malformed** one. Verified: fresh-machine create,
@@ -91,6 +91,6 @@ disk** when the power cuts — a reboot gives no chance to scrape it at shutdown
 1. `persistence.toml` holds the terminal's cwd, `persist_index`, and
    `agent_session_id` (captured live by the auto-installed SessionStart hook).
 2. On next boot, restore replays entries → `claimPersistIndex` → fresh tmux
-   session `architect-<epoch>-<persist_index>` in the saved cwd.
-3. `-e ARCHITECT_RESUME_CMD` fires `claude --resume <id>` once (dedup: first
+   session `cadre-<epoch>-<persist_index>` in the saved cwd.
+3. `-e CADRE_RESUME_CMD` fires `claude --resume <id>` once (dedup: first
    entry wins), restoring the conversation from its transcript.

@@ -1,8 +1,8 @@
-# xterm-ghostty terminfo for Architect terminal
+# xterm-ghostty terminfo for Cadre terminal
 # Capabilities: 256 colors, 24-bit truecolor (Tc/RGB), kitty keyboard protocol
 #
-# This terminfo is automatically compiled and installed by Architect
-# to ~/.cache/architect/terminfo on first run.
+# This terminfo is automatically compiled and installed by Cadre
+# to ~/.cache/cadre/terminfo on first run.
 #
 # Manual compile: tic -x -o <output_dir> xterm-ghostty.terminfo
 #
@@ -13,7 +13,7 @@
 # format (magic 0x021e); without this override they fall back to
 # "WARNING: terminal is not fully functional". See issue #318.
 
-xterm-ghostty|Architect terminal with truecolor and kitty keyboard,
+xterm-ghostty|Cadre terminal with truecolor and kitty keyboard,
 	Tc,
 	RGB,
 	pairs#0x7fff,

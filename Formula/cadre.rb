@@ -1,4 +1,4 @@
-class Architect < Formula
+class Cadre < Formula
   desc "Terminal window manager with AI-powered workspace orchestration"
   homepage "https://github.com/forketyfork/architect"
   url "https://github.com/forketyfork/architect/archive/refs/tags/v0.65.6.tar.gz"
@@ -15,12 +15,12 @@ class Architect < Formula
     system "zig", "build",
            "-Doptimize=ReleaseFast"
 
-    app_name = "Architect"
+    app_name = "Cadre"
     app_path = prefix/"#{app_name}.app"
     contents = app_path/"Contents"
     macos = contents/"MacOS"
     resources = contents/"Resources"
-    share = contents/"share/architect"
+    share = contents/"share/cadre"
 
     macos.mkpath
     resources.mkpath
@@ -35,11 +35,11 @@ class Architect < Formula
           <key>CFBundleDisplayName</key>
           <string>#{app_name}</string>
           <key>CFBundleIdentifier</key>
-          <string>com.forketyfork.architect</string>
+          <string>com.forketyfork.cadre</string>
           <key>CFBundlePackageType</key>
           <string>APPL</string>
           <key>CFBundleExecutable</key>
-          <string>architect</string>
+          <string>cadre</string>
           <key>CFBundleIconFile</key>
           <string>#{app_name}</string>
           <key>CFBundleVersion</key>
@@ -49,52 +49,52 @@ class Architect < Formula
           <key>NSHighResolutionCapable</key>
           <true/>
           <key>NSAppleEventsUsageDescription</key>
-          <string>A program running in Architect would like to use AppleScript.</string>
+          <string>A program running in Cadre would like to use AppleScript.</string>
           <key>NSCameraUsageDescription</key>
-          <string>A program running in Architect would like to use the camera.</string>
+          <string>A program running in Cadre would like to use the camera.</string>
           <key>NSMicrophoneUsageDescription</key>
-          <string>A program running in Architect would like to use your microphone.</string>
+          <string>A program running in Cadre would like to use your microphone.</string>
           <key>NSContactsUsageDescription</key>
-          <string>A program running in Architect would like to access your Contacts.</string>
+          <string>A program running in Cadre would like to access your Contacts.</string>
           <key>NSCalendarsUsageDescription</key>
-          <string>A program running in Architect would like to access your Calendar.</string>
+          <string>A program running in Cadre would like to access your Calendar.</string>
           <key>NSLocationUsageDescription</key>
-          <string>A program running in Architect would like to access your location.</string>
+          <string>A program running in Cadre would like to access your location.</string>
           <key>NSPhotoLibraryUsageDescription</key>
-          <string>A program running in Architect would like to access your Photo Library.</string>
+          <string>A program running in Cadre would like to access your Photo Library.</string>
         </dict>
       </plist>
     EOS
 
-    macos.install buildpath/"zig-out/bin/architect"
-    macos.install buildpath/"zig-out/bin/architect-mcp"
-    bin.install_symlink macos/"architect-mcp" => "architect-mcp"
+    macos.install buildpath/"zig-out/bin/cadre"
+    macos.install buildpath/"zig-out/bin/cadre-mcp"
+    bin.install_symlink macos/"cadre-mcp" => "cadre-mcp"
 
     resources.install "assets/macos/#{app_name}.icns"
   end
 
   def caveats
     <<~EOS
-      Architect.app has been installed to:
-        #{prefix}/Architect.app
+      Cadre.app has been installed to:
+        #{prefix}/Cadre.app
 
       To add it to your Applications folder (for Spotlight/Launchpad access):
-        cp -r #{prefix}/Architect.app /Applications/
+        cp -r #{prefix}/Cadre.app /Applications/
 
       Launch with:
-        open -a Architect
+        open -a Cadre
 
       MCP helper command:
-        architect-mcp
+        cadre-mcp
 
       MCP helper app-bundle path:
-        #{prefix}/Architect.app/Contents/MacOS/architect-mcp
+        #{prefix}/Cadre.app/Contents/MacOS/cadre-mcp
     EOS
   end
 
   test do
-    assert_path_exists prefix/"Architect.app/Contents/MacOS/architect"
-    assert_path_exists prefix/"Architect.app/Contents/MacOS/architect-mcp"
-    assert_path_exists bin/"architect-mcp"
+    assert_path_exists prefix/"Cadre.app/Contents/MacOS/cadre"
+    assert_path_exists prefix/"Cadre.app/Contents/MacOS/cadre-mcp"
+    assert_path_exists bin/"cadre-mcp"
   end
 end

@@ -6,7 +6,7 @@ const time_c = @cImport({
     @cInclude("time.h");
 });
 
-pub const active_log_filename = "architect.log";
+pub const active_log_filename = "cadre.log";
 pub const default_max_file_size_bytes: u64 = 10 * 1024 * 1024;
 
 pub const InitOptions = struct {
@@ -49,9 +49,9 @@ fn isEnabled(min_level: std.log.Level, level: std.log.Level) bool {
 fn defaultLogDirectoryPath(allocator: std.mem.Allocator) ![]u8 {
     const home = posix.getenv("HOME") orelse return error.HomeNotFound;
     if (builtin.os.tag == .macos) {
-        return fs.path.join(allocator, &[_][]const u8{ home, "Library", "Logs", "Architect" });
+        return fs.path.join(allocator, &[_][]const u8{ home, "Library", "Logs", "Cadre" });
     }
-    return fs.path.join(allocator, &[_][]const u8{ home, ".local", "state", "architect", "logs" });
+    return fs.path.join(allocator, &[_][]const u8{ home, ".local", "state", "cadre", "logs" });
 }
 
 fn buildPath(path_buf: []u8, directory_path: []const u8, basename: []const u8) ![]const u8 {
@@ -159,9 +159,9 @@ fn rotateLocked(s: *LoggerState) !void {
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
         const archive_name = if (attempt == 0)
-            try std.fmt.bufPrint(&archive_name_buf, "architect-{s}.log", .{suffix})
+            try std.fmt.bufPrint(&archive_name_buf, "cadre-{s}.log", .{suffix})
         else
-            try std.fmt.bufPrint(&archive_name_buf, "architect-{s}-{d}.log", .{ suffix, attempt });
+            try std.fmt.bufPrint(&archive_name_buf, "cadre-{s}-{d}.log", .{ suffix, attempt });
         const archive_path = try buildPath(&archive_path_buf, directory_path, archive_name);
         fs.renameAbsolute(active_path, archive_path) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
@@ -318,13 +318,13 @@ pub fn isInitialized() bool {
 pub fn writeStartupMarker() !void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    try writeEventLocked(&state, "runtime", "architect startup", "startup", null);
+    try writeEventLocked(&state, "runtime", "cadre startup", "startup", null);
 }
 
 pub fn writeShutdownMarker() !void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    try writeEventLocked(&state, "runtime", "architect shutdown", "shutdown", null);
+    try writeEventLocked(&state, "runtime", "cadre shutdown", "shutdown", null);
 }
 
 pub fn writeEvent(
@@ -486,7 +486,7 @@ test "rotation archives old file once size limit is exceeded" {
             active_found = true;
             continue;
         }
-        if (std.mem.startsWith(u8, entry.name, "architect-")) {
+        if (std.mem.startsWith(u8, entry.name, "cadre-")) {
             archive_count += 1;
         }
     }

@@ -28,7 +28,7 @@
       "WebFetch(domain:github.com)",
       "Bash(printf:*)",
       "Bash(fc-query:*)",
-      "Bash(zig-out/bin/architect:*)",
+      "Bash(zig-out/bin/cadre:*)",
       "Bash(fc-list:*)"
     ],
     "deny": [],

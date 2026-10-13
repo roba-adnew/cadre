@@ -1,7 +1,7 @@
 .{
-    .name = .architect,
+    .name = .cadre,
     .version = "0.1.0",
-    .fingerprint = 0x3a466a9634a65f7c,
+    .fingerprint = 0xf42587b92743a990,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .ghostty = .{

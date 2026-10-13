@@ -60,11 +60,11 @@ pub fn build(b: *std.Build) void {
     }
 
     const exe = b.addExecutable(.{
-        .name = "architect",
+        .name = "cadre",
         .root_module = exe_mod,
     });
     const mcp_exe = b.addExecutable(.{
-        .name = "architect-mcp",
+        .name = "cadre-mcp",
         .root_module = mcp_mod,
     });
 

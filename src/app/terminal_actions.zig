@@ -39,7 +39,7 @@ pub fn pasteText(
 
 /// Cmd+V image paste (opt-in via `[paste] image_passthrough`).
 ///
-/// When the system clipboard holds an image, Architect reads it, writes it to a
+/// When the system clipboard holds an image, Cadre reads it, writes it to a
 /// temp PNG file, and pastes that file path as text into the focused terminal.
 /// CLIs like Claude Code recognize an image file path and attach the image. This
 /// is far more reliable than forwarding Ctrl+V and relying on the program's own
@@ -79,7 +79,7 @@ pub fn tryPasteImagePassthrough(
 /// the CLI can read it when the message is sent; the OS reclaims the temp dir.
 fn writeClipboardImageTempFile(allocator: std.mem.Allocator, png: []const u8, session_id: usize, now: i64) ![]u8 {
     const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
-    const name = try std.fmt.allocPrint(allocator, "architect-paste-{d}-{d}.png", .{ now, session_id });
+    const name = try std.fmt.allocPrint(allocator, "cadre-paste-{d}-{d}.png", .{ now, session_id });
     defer allocator.free(name);
     const path = try std.fs.path.join(allocator, &.{ tmp_dir, name });
     errdefer allocator.free(path);

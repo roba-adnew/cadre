@@ -1,4 +1,4 @@
-# Architect UI Framework Refactor Plan (Option A)
+# Cadre UI Framework Refactor Plan (Option A)
 
 Goal: stop “UI hacked into main + renderer” from expanding into a hydra. Build a small, reusable UI layer with (1) a component registry, (2) time-based animations per component, (3) event handling with capture/consume semantics, and (4) rendering as a separate overlay pass after the scene render. Then port the current UI bits (“Restart” button, “?” help overlay, toast, ESC hold indicator) into real components.
 

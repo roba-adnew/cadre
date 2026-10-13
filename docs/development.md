@@ -29,7 +29,7 @@ This document covers local setup, build/test commands, and release steps.
 
    The dev shell works around that by exposing `MacOSX15.4.sdk` through a fake `DEVELOPER_DIR` whose `usr/bin/xcrun` is a narrow shim for `xcrun --sdk macosx --show-sdk-path`. `build.zig` also resolves framework paths through `DEVELOPER_DIR` and `xcrun` before it falls back to hardcoded SDK locations, so the workaround does not need to force `SDKROOT`. Keeping the shim inside the fake developer tree means tools like `git` can still invoke `/usr/bin/xcrun` without tripping over the overridden `DEVELOPER_DIR`.
 
-   Remove this workaround once Architect no longer uses Zig 0.15.2, or once Zig handles the arm64e-only macOS SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
+   Remove this workaround once Cadre no longer uses Zig 0.15.2, or once Zig handles the arm64e-only macOS SDK stubs correctly. If the active `MacOSX.sdk/usr/lib/libSystem.tbd` advertises `arm64-macos` again, the shell hook becomes a no-op.
 
 3. Verify the environment:
    ```bash
@@ -65,10 +65,10 @@ just reload
 ./scripts/dev-reload.sh
 ```
 This rebuilds from the current worktree (committed + uncommitted changes), quits the
-running Architect, swaps the fresh build into `/Applications/Architect.app`, and
+running Cadre, swaps the fresh build into `/Applications/Cadre.app`, and
 relaunches it. Use it to avoid restarting a stale binary after editing source — relaunching
 the installed app alone never picks up source changes. The Claude Code skill
-`/reload-architect` runs the same script.
+`/reload-cadre` runs the same script.
 
 **Reload guard.** `dev-reload.sh` refuses to run while the installed app has live
 agent descendants (`claude`/`codex`/`gemini`), because restarting it kills those
@@ -84,7 +84,7 @@ accept losing that agent state.
 ```
 This builds the worktree and **atomic-swaps** the fresh bundle into
 `/Applications` immediately: it renames the old bundle aside and renames the new
-one into place. The swap is safe even while Architect is running because the
+one into place. The swap is safe even while Cadre is running because the
 live process keeps its original (renamed-then-unlinked) inode — its mach-o pages
 never change, so the kernel never SIGKILLs it on a signature page fault
 (`cs_invalid_page` / "Killed: 9") the way an in-place *overwrite* would. You keep
@@ -98,24 +98,28 @@ changes without touching the daily app at all:
 ./scripts/dev-instance.sh
 ```
 This builds the current worktree and launches a separate instance with its own
-config/persistence directory (`ARCHITECT_CONFIG_DIR`, default `~/.config/architect-dev`),
+config/persistence directory (`CADRE_CONFIG_DIR`, default `~/.config/cadre-dev`),
 so it never resumes, reads, or clobbers the daily app's agent sessions. Point it at a
-named scratch dir with `ARCHITECT_DEV_CONFIG_DIR=/path ./scripts/dev-instance.sh`.
+named scratch dir with `CADRE_DEV_CONFIG_DIR=/path ./scripts/dev-instance.sh`.
 The shared native build environment (Homebrew SDL3 + macOS 15.4 SDK workaround) lives
 in `scripts/dev-build-env.sh`, sourced by both scripts.
+
+## Migrating a pre-rename install
+
+The project was renamed from `architect` to `cadre` (binary, bundle, config and log dirs, tmux session prefix `cadre-<epoch>-<n>`, tmux/notify/control socket names, `CADRE_*` env vars). `scripts/migrate-to-cadre.sh` moves `~/.config/architect` and `~/Library/Logs/Architect`, renames `architect-*` tmux sessions in place and symlinks the new tmux socket path to the old server so live agents reattach. Run it with the app quit; it is idempotent. Compatibility shims kept for panes spawned before the rename: `cadre notify`/`agent-session` read `ARCHITECT_SESSION_ID`/`ARCHITECT_NOTIFY_SOCK` as fallbacks, the app symlinks the old notify socket path to the live one at startup, and `cadre hook claude` rewrites `architect ...` hook commands in `~/.claude/settings.json`.
 
 ## Persistent agent sessions
 
 tmux-backed persistence is on by default (experimental) — it engages whenever
-`tmux` is on `PATH`, letting agents survive an Architect restart and reattach live
+`tmux` is on `PATH`, letting agents survive an Cadre restart and reattach live
 instead of being resumed from a stale transcript. If `tmux` isn't installed,
-Architect falls back to a direct shell. See `docs/configuration.md` and ADR-015 in
+Cadre falls back to a direct shell. See `docs/configuration.md` and ADR-015 in
 `docs/ARCHITECTURE.md`.
 
 **Try it:** run an agent in a dev instance (`./scripts/dev-instance.sh`), quit,
 relaunch with the same command — the agent reappears mid-conversation. Inspect the
 tmux state with
-`tmux -S "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/architect-tmux.sock" ls`.
+`tmux -S "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/cadre-tmux.sock" ls`.
 
 ## Dependencies and Tooling
 
@@ -149,7 +153,7 @@ zig fmt src/
 
 `zig build test` covers logic but not real UI behavior (focus, view-mode
 transitions, clicks) — the area that has caused the most regressions. The E2E
-harness in `scripts/e2e/` fills that gap: with `ARCHITECT_TEST_MODE=1` the app
+harness in `scripts/e2e/` fills that gap: with `CADRE_TEST_MODE=1` the app
 writes a per-frame JSON state snapshot (`src/app/test_probe.zig`, a no-op in
 production), and a Python harness launches an isolated instance, injects real
 keys/clicks, and asserts on that state.
@@ -175,7 +179,7 @@ git push origin v0.1.0
 The release workflow packages ad-hoc-signed app bundles with local `codesign --sign -`. It does not import macOS signing certificates, does not produce Developer ID-signed artifacts, and does not notarize the app. Release downloads therefore still require clearing the quarantine attribute after extraction, as described in the README installation instructions. You can also run the Release workflow manually with `workflow_dispatch` to validate the packaging flow before pushing a real release tag.
 
 Each release includes:
-- `architect-macos-arm64.tar.gz` - Apple Silicon
-- `architect-macos-x86_64.tar.gz` - Intel
+- `cadre-macos-arm64.tar.gz` - Apple Silicon
+- `cadre-macos-x86_64.tar.gz` - Intel
 
-Each archive contains `Architect.app` with both `Contents/MacOS/architect` and the stdio MCP helper `Contents/MacOS/architect-mcp`.
+Each archive contains `Cadre.app` with both `Contents/MacOS/cadre` and the stdio MCP helper `Contents/MacOS/cadre-mcp`.

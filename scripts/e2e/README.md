@@ -20,9 +20,9 @@ run it when you're not mid-task. Exit code is non-zero if any test fails.
 
 Two halves:
 
-- **Observe.** With `ARCHITECT_TEST_MODE=1`, the app writes a JSON snapshot of its
+- **Observe.** With `CADRE_TEST_MODE=1`, the app writes a JSON snapshot of its
   UI state (view mode, focused pane, grid size, per-pane spawned/dead/cwd/status)
-  to `ARCHITECT_STATE_FILE` every frame, atomically (`src/app/test_probe.zig`).
+  to `CADRE_STATE_FILE` every frame, atomically (`src/app/test_probe.zig`).
   Tests read that file — precise truth, no screen-scraping. It's a no-op in
   production (the env vars are unset), so it costs nothing there.
 - **Drive.** The harness (`harness.py`) launches an isolated instance, brings its
@@ -32,10 +32,10 @@ Two halves:
 A test is just: do something, then assert on the state.
 
 ```python
-from harness import Architect, CMD
+from harness import Cadre, CMD
 
 def test_cmd_esc_enters_grid():
-    with Architect() as app:
+    with Cadre() as app:
         app.wait_for(lambda s: any(x["spawned"] for x in s["sessions"]), what="first pane")
         app.act_until(lambda: app.key("n", CMD),                       # Cmd+N: add a pane
                       lambda s: sum(x["spawned"] for x in s["sessions"]) >= 2, what="2 panes")
@@ -43,7 +43,7 @@ def test_cmd_esc_enters_grid():
                       lambda s: s["mode"] == "Grid", what="grid mode")
 ```
 
-`Architect` gives you: `state()`, `opened_urls()`, `wait_for(pred, ...)`,
+`Cadre` gives you: `state()`, `opened_urls()`, `wait_for(pred, ...)`,
 `act_until(action, pred, ...)`, `key(name, flags)`, `type_text(s)`, `enter()`,
 `click(x, y)`, `cmd_click(x, y)`, `scroll(dy)`, `grid_cell_center(slot)`,
 `window_rect()`. Add a test by writing a function and listing it in `TESTS` in
@@ -56,7 +56,7 @@ waiting on something with no action to repeat.
 
 Covered today: startup, add/remove terminals (Cmd+N / Cmd+W), grid↔full
 (Cmd+Esc / Cmd+Return), click-to-focus in grid, and Cmd+Click opening a link.
-Link opens are recorded to `ARCHITECT_OPENED_URLS_FILE` instead of launching a
+Link opens are recorded to `CADRE_OPENED_URLS_FILE` instead of launching a
 browser (`recordOpenForTest` in `src/os/open.zig`), readable via `opened_urls()`.
 
 ## Limitations / roadmap

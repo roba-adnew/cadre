@@ -23,7 +23,7 @@ pub const StoryNotification = struct {
 };
 
 /// Reports the live agent (e.g. Claude Code) session id for a pane, sent by the
-/// agent's SessionStart hook. Lets Architect capture the resume id reliably the
+/// agent's SessionStart hook. Lets Cadre capture the resume id reliably the
 /// moment a session starts — instead of scraping it during quit teardown.
 pub const AgentSessionNotification = struct {
     session: usize,
@@ -59,16 +59,36 @@ pub const NotificationQueue = struct {
 pub const GetNotifySocketPathError = std.mem.Allocator.Error;
 
 /// Stable across app restarts: tmux-reattached panes keep the
-/// ARCHITECT_NOTIFY_SOCK baked at spawn, so a pid-based name would point their
-/// hooks at a dead socket. Keyed by config dir so per-ARCHITECT_CONFIG_DIR
+/// CADRE_NOTIFY_SOCK baked at spawn, so a pid-based name would point their
+/// hooks at a dead socket. Keyed by config dir so per-CADRE_CONFIG_DIR
 /// instances get disjoint sockets.
 fn notifySocketName(buf: []u8) []const u8 {
-    const config_dir = std.posix.getenv("ARCHITECT_CONFIG_DIR") orelse
+    const config_dir = std.posix.getenv("CADRE_CONFIG_DIR") orelse
         (std.posix.getenv("HOME") orelse "/");
     const key = std.hash.Wyhash.hash(0, config_dir);
-    return std.fmt.bufPrint(buf, "architect_notify_{x}.sock", .{key}) catch |err| blk: {
+    return std.fmt.bufPrint(buf, "cadre_notify_{x}.sock", .{key}) catch |err| blk: {
         log.warn("notify socket name format failed: {}", .{err});
-        break :blk "architect_notify.sock";
+        break :blk "cadre_notify.sock";
+    };
+}
+
+/// Pre-rename panes have `/tmp/architect_notify_<key>.sock` baked into their
+/// env. Point that path at the live socket so their hooks keep landing.
+/// ponytail: remove once no pane spawned before the rename can still be alive.
+pub fn linkLegacySocketPath(allocator: std.mem.Allocator, current: [:0]const u8) void {
+    const dir = std.fs.path.dirname(current) orelse return;
+    const name = std.fs.path.basename(current);
+    if (!std.mem.startsWith(u8, name, "cadre_")) return;
+    const legacy_name = std.fmt.allocPrint(allocator, "architect_{s}", .{name[6..]}) catch return;
+    defer allocator.free(legacy_name);
+    const legacy = std.fs.path.joinZ(allocator, &[_][]const u8{ dir, legacy_name }) catch return;
+    defer allocator.free(legacy);
+    posix.unlink(legacy) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.warn("failed to remove stale legacy notify socket path: {}", .{err}),
+    };
+    posix.symlink(current, legacy) catch |err| {
+        log.warn("failed to link legacy notify socket path: {}", .{err});
     };
 }
 

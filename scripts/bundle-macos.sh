@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <executable> <output-dir> [architect-mcp-executable] [--debug] [--unsigned]"
+    echo "Usage: $0 <executable> <output-dir> [cadre-mcp-executable] [--debug] [--unsigned]"
     exit 1
 fi
 
@@ -32,7 +32,7 @@ for arg in "${@:3}"; do
 done
 
 if [[ -z "$MCP_EXECUTABLE" ]]; then
-    MCP_EXECUTABLE="$(dirname "$EXECUTABLE")/architect-mcp"
+    MCP_EXECUTABLE="$(dirname "$EXECUTABLE")/cadre-mcp"
 fi
 
 APP_NAME="Cadre"
@@ -41,28 +41,28 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 LIB_DIR="$MACOS_DIR/lib"
-SHARE_DIR="$CONTENTS_DIR/share/architect"
+SHARE_DIR="$CONTENTS_DIR/share/cadre"
 ICON_SOURCE="assets/macos/${APP_NAME}.icns"
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 if [[ "$SIGN_APP" == true ]]; then
     if [[ "$DEBUG_MODE" == true ]]; then
-        ENTITLEMENTS="$REPO_ROOT/macos/ArchitectDebug.entitlements"
+        ENTITLEMENTS="$REPO_ROOT/macos/CadreDebug.entitlements"
     else
-        ENTITLEMENTS="$REPO_ROOT/macos/Architect.entitlements"
+        ENTITLEMENTS="$REPO_ROOT/macos/Cadre.entitlements"
     fi
 
     # Signing identity. A STABLE identity (Apple Development / Developer ID cert)
     # gives the bundle a fixed designated requirement, so macOS TCC/privacy grants
     # (Documents folder, camera, etc.) survive rebuilds. Ad-hoc ("-") changes the
     # cdhash on every build, so TCC treats each rebuild as a new app and re-prompts.
-    # Set ARCHITECT_CODESIGN_IDENTITY to a cert (its SHA-1 hash or name, per
+    # Set CADRE_CODESIGN_IDENTITY to a cert (its SHA-1 hash or name, per
     # `security find-identity -v -p codesigning`); defaults to ad-hoc so CI and
     # machines without a cert build exactly as before.
-    SIGN_IDENTITY="${ARCHITECT_CODESIGN_IDENTITY:--}"
+    SIGN_IDENTITY="${CADRE_CODESIGN_IDENTITY:--}"
     if [[ "$SIGN_IDENTITY" == "-" ]]; then
-        echo "Signing ad-hoc (set ARCHITECT_CODESIGN_IDENTITY for stable, TCC-persistent signing)."
+        echo "Signing ad-hoc (set CADRE_CODESIGN_IDENTITY for stable, TCC-persistent signing)."
     else
         echo "Signing with stable identity: $SIGN_IDENTITY"
     fi
@@ -72,7 +72,7 @@ echo "Bundling macOS application: $EXECUTABLE -> $APP_DIR"
 echo "Including MCP helper: $MCP_EXECUTABLE"
 
 if [[ ! -f "$MCP_EXECUTABLE" ]]; then
-    echo "Error: architect-mcp executable not found: $MCP_EXECUTABLE"
+    echo "Error: cadre-mcp executable not found: $MCP_EXECUTABLE"
     exit 1
 fi
 
@@ -89,41 +89,41 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleDisplayName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.forketyfork.architect</string>
+    <string>com.forketyfork.cadre</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>architect</string>
+    <string>cadre</string>
     <key>CFBundleIconFile</key>
     <string>${APP_NAME}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>A program running in Architect would like to use AppleScript.</string>
+    <string>A program running in Cadre would like to use AppleScript.</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>A program running in Architect would like to use Bluetooth.</string>
+    <string>A program running in Cadre would like to use Bluetooth.</string>
     <key>NSCalendarsUsageDescription</key>
-    <string>A program running in Architect would like to access your Calendar.</string>
+    <string>A program running in Cadre would like to access your Calendar.</string>
     <key>NSCameraUsageDescription</key>
-    <string>A program running in Architect would like to use the camera.</string>
+    <string>A program running in Cadre would like to use the camera.</string>
     <key>NSContactsUsageDescription</key>
-    <string>A program running in Architect would like to access your Contacts.</string>
+    <string>A program running in Cadre would like to access your Contacts.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>A program running in Architect would like to access the local network.</string>
+    <string>A program running in Cadre would like to access the local network.</string>
     <key>NSLocationUsageDescription</key>
-    <string>A program running in Architect would like to access your location.</string>
+    <string>A program running in Cadre would like to access your location.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>A program running in Architect would like to use your microphone.</string>
+    <string>A program running in Cadre would like to use your microphone.</string>
     <key>NSMotionUsageDescription</key>
-    <string>A program running in Architect would like to access motion data.</string>
+    <string>A program running in Cadre would like to access motion data.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>A program running in Architect would like to access your Photo Library.</string>
+    <string>A program running in Cadre would like to access your Photo Library.</string>
     <key>NSRemindersUsageDescription</key>
-    <string>A program running in Architect would like to access your reminders.</string>
+    <string>A program running in Cadre would like to access your reminders.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>A program running in Architect would like to use speech recognition.</string>
+    <string>A program running in Cadre would like to use speech recognition.</string>
     <key>NSSystemAdministrationUsageDescription</key>
-    <string>A program running in Architect requires elevated privileges.</string>
+    <string>A program running in Cadre requires elevated privileges.</string>
   </dict>
 </plist>
 EOF
@@ -136,10 +136,10 @@ else
 fi
 
 # Copy the binary as the main executable (dylibs use @executable_path/lib/)
-cp "$EXECUTABLE" "$MACOS_DIR/architect"
-chmod +x "$MACOS_DIR/architect"
-cp "$MCP_EXECUTABLE" "$MACOS_DIR/architect-mcp"
-chmod +x "$MACOS_DIR/architect-mcp"
+cp "$EXECUTABLE" "$MACOS_DIR/cadre"
+chmod +x "$MACOS_DIR/cadre"
+cp "$MCP_EXECUTABLE" "$MACOS_DIR/cadre-mcp"
+chmod +x "$MACOS_DIR/cadre-mcp"
 
 seen_list=""
 queue=""
@@ -256,18 +256,18 @@ if [[ "$skip_lib_patching" != true ]]; then
         done <<< "$nested_list"
     done
 
-    patch_binary_deps "$MACOS_DIR/architect" "architect"
-    patch_binary_deps "$MACOS_DIR/architect-mcp" "architect-mcp"
+    patch_binary_deps "$MACOS_DIR/cadre" "cadre"
+    patch_binary_deps "$MACOS_DIR/cadre-mcp" "cadre-mcp"
 
     echo ""
     echo "Verifying final dependencies..."
-    if otool -L "$MACOS_DIR/architect" | grep -q '/nix/store'; then
-        echo "Warning: Nix store references remain in architect binary"
-        otool -L "$MACOS_DIR/architect" | grep '/nix/store'
+    if otool -L "$MACOS_DIR/cadre" | grep -q '/nix/store'; then
+        echo "Warning: Nix store references remain in cadre binary"
+        otool -L "$MACOS_DIR/cadre" | grep '/nix/store'
     fi
-    if otool -L "$MACOS_DIR/architect-mcp" | grep -q '/nix/store'; then
-        echo "Warning: Nix store references remain in architect-mcp binary"
-        otool -L "$MACOS_DIR/architect-mcp" | grep '/nix/store'
+    if otool -L "$MACOS_DIR/cadre-mcp" | grep -q '/nix/store'; then
+        echo "Warning: Nix store references remain in cadre-mcp binary"
+        otool -L "$MACOS_DIR/cadre-mcp" | grep '/nix/store'
     fi
 
     remaining=0
@@ -301,11 +301,11 @@ if [[ "$SIGN_APP" == true ]]; then
     done
     shopt -u nullglob
 
-    echo "Signing architect-mcp..."
-    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect-mcp"
+    echo "Signing cadre-mcp..."
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/cadre-mcp"
 
-    echo "Signing architect..."
-    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/architect"
+    echo "Signing cadre..."
+    codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$MACOS_DIR/cadre"
 
     echo "Signing ${APP_NAME}.app..."
     codesign --force --sign "$SIGN_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_DIR"
@@ -314,8 +314,8 @@ if [[ "$SIGN_APP" == true ]]; then
 else
     echo ""
     echo "Removing embedded signatures (--unsigned)..."
-    remove_signature_if_present "$MACOS_DIR/architect"
-    remove_signature_if_present "$MACOS_DIR/architect-mcp"
+    remove_signature_if_present "$MACOS_DIR/cadre"
+    remove_signature_if_present "$MACOS_DIR/cadre-mcp"
     shopt -s nullglob
     for lib in "$LIB_DIR"/*.dylib; do
         remove_signature_if_present "$lib"
@@ -330,4 +330,4 @@ find "$OUTPUT_DIR" -type f
 
 echo ""
 echo "To distribute, package the entire directory:"
-echo "  cd $OUTPUT_DIR && tar -czf architect-macos.tar.gz ${APP_NAME}.app"
+echo "  cd $OUTPUT_DIR && tar -czf cadre-macos.tar.gz ${APP_NAME}.app"

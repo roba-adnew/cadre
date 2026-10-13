@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot host setup for building Architect natively on a fresh Mac.
+# One-shot host setup for building Cadre natively on a fresh Mac.
 # Installs: Xcode CLT, Homebrew deps (SDL3/SDL3_ttf/tmux), pinned Zig, and
 # checks the macOS 15.4 SDK the Zig 0.15.2 link workaround needs.
 #
@@ -11,7 +11,7 @@ set -euo pipefail
 
 ZIG_VERSION="0.15.2"   # keep in sync with build.zig.zon minimum_zig_version
 SDK_15_4="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
-SDK_TARBALL="$HOME/architect-MacOSX15.4.sdk.tar.gz"
+SDK_TARBALL="$HOME/cadre-MacOSX15.4.sdk.tar.gz"
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
@@ -86,14 +86,14 @@ if [[ ! -d "$SDK_15_4" ]]; then
 Zig $ZIG_VERSION can't link the newer arm64e-only SDK, so the build needs the
 15.4 SDK present. Fastest fix — on your OTHER Mac run:
     ./scripts/bootstrap-macos.sh --pack-sdk
-copy ~/architect-MacOSX15.4.sdk.tar.gz here, drop it at $SDK_TARBALL, and re-run this.
+copy ~/cadre-MacOSX15.4.sdk.tar.gz here, drop it at $SDK_TARBALL, and re-run this.
 EOF
         exit 1
     fi
 fi
 
 # --- 5. Build ----------------------------------------------------------------
-say "Building Architect"
+say "Building Cadre"
 ROOT="$(git rev-parse --show-toplevel)"
 # shellcheck source=scripts/dev-build-env.sh
 source "$ROOT/scripts/dev-build-env.sh"

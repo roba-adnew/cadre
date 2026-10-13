@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== Verifying Architect Setup ==="
+echo "=== Verifying Cadre Setup ==="
 echo ""
 
 echo "1. Checking Zig installation..."

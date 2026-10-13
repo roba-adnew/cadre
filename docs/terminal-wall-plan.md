@@ -11,7 +11,7 @@ just lint
 
 ## Step 1: Audit ghostty-vt Capabilities And Constraints
 ### Status Quo
-The `architect` repository consumes `ghostty-vt` via a pinned tarball dependency; no local `ghostty-org/ghostty` checkout is required. Documentation on `ghostty-vt` usage is captured in this repo.
+The `cadre` repository consumes `ghostty-vt` via a pinned tarball dependency; no local `ghostty-org/ghostty` checkout is required. Documentation on `ghostty-vt` usage is captured in this repo.
 
 ### Objectives
 Document the APIs, build requirements, and integration patterns for embedding `ghostty-vt` inside a Zig application.
@@ -27,7 +27,7 @@ A short integration memo (`docs/ghostty-vt-notes.md`) exists in this repo descri
 
 ## Step 2: Scaffold Zig Project With ghostty-vt Dependency
 ### Status Quo
-ghostty-vt usage notes exist, but there is no Zig project in the `architect` repository.
+ghostty-vt usage notes exist, but there is no Zig project in the `cadre` repository.
 
 ### Objectives
 Create the base Zig executable project and configure `build.zig` so the app can import `ghostty-vt`.

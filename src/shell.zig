@@ -26,34 +26,34 @@ var terminfo_available: bool = false;
 var terminfo_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
 var terminfo_dir_z: ?[:0]const u8 = null;
 var tic_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-var architect_command_base_buf: [std.fs.max_path_bytes]u8 = undefined;
-var architect_command_base_z: ?[:0]const u8 = null;
-var architect_command_setup_done: bool = false;
-var architect_command_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-var architect_command_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-var architect_command_dir_z: ?[:0]const u8 = null;
-var architect_command_path_z: ?[:0]const u8 = null;
-var architect_zsh_profile_setup_done: bool = false;
-var architect_zsh_profile_ready: bool = false;
+var cadre_command_base_buf: [std.fs.max_path_bytes]u8 = undefined;
+var cadre_command_base_z: ?[:0]const u8 = null;
+var cadre_command_setup_done: bool = false;
+var cadre_command_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+var cadre_command_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+var cadre_command_dir_z: ?[:0]const u8 = null;
+var cadre_command_path_z: ?[:0]const u8 = null;
+var cadre_zsh_profile_setup_done: bool = false;
+var cadre_zsh_profile_ready: bool = false;
 
 const fallback_term = "xterm-256color";
-const architect_term = "xterm-ghostty";
+const cadre_term = "xterm-ghostty";
 const default_colorterm = "truecolor";
 const default_lang = "en_US.UTF-8";
-const default_term_program = "Architect";
+const default_term_program = "Cadre";
 const default_force_hyperlink = "1";
 
-// Architect terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
-const architect_terminfo_src = assets.xterm_ghostty;
-const architect_command_script =
+// Cadre terminfo: xterm-256color base + 24-bit truecolor + kitty keyboard protocol
+const cadre_terminfo_src = assets.xterm_ghostty;
+const cadre_command_script =
     \\#!/usr/bin/env python3
     \\"""
-    \\Architect shell helper for sending UI notifications and installing hooks.
+    \\Cadre shell helper for sending UI notifications and installing hooks.
     \\
     \\Usage:
-    \\    architect notify <state|json>
-    \\    architect notify   (reads stdin)
-    \\    architect hook claude|codex|gemini
+    \\    cadre notify <state|json>
+    \\    cadre notify   (reads stdin)
+    \\    cadre hook claude|codex|gemini
     \\"""
     \\import datetime
     \\import json
@@ -69,25 +69,35 @@ const architect_command_script =
     \\
     \\VALID_STATES = {"start", "awaiting_approval", "done"}
     \\
-    \\CLAUDE_DONE = "architect notify done || true"
+    \\CLAUDE_DONE = "cadre notify done || true"
     \\# Stdin mode: Claude pipes the Notification hook JSON and state_from_notification
     \\# decides whether it means "needs you". The old hardcoded form flagged every
     \\# notification type (idle_prompt, auth_success, ...) as awaiting_approval.
-    \\CLAUDE_APPROVAL = "architect notify || true"
-    \\CLAUDE_APPROVAL_LEGACY = "architect notify awaiting_approval || true"
-    \\CLAUDE_SESSION = "architect agent-session || true"
-    \\CLAUDE_NEEDLES = ("architect notify", "architect_notify.py")
-    \\CLAUDE_SESSION_NEEDLES = ("architect agent-session",)
+    \\CLAUDE_APPROVAL = "cadre notify || true"
+    \\CLAUDE_APPROVAL_LEGACY = "cadre notify awaiting_approval || true"
+    \\CLAUDE_SESSION = "cadre agent-session || true"
+    \\# Pre-rename commands (binary was `architect`); rewritten in place so panes
+    \\# spawned before the rename keep notifying. ponytail: drop once no settings
+    \\# file on any machine still carries them.
+    \\LEGACY_RENAMES = (
+    \\    ("architect notify done || true", CLAUDE_DONE),
+    \\    ("architect notify || true", CLAUDE_APPROVAL),
+    \\    ("architect notify awaiting_approval || true", CLAUDE_APPROVAL),
+    \\    ("architect agent-session || true", CLAUDE_SESSION),
+    \\)
+    \\CLAUDE_NEEDLES = ("cadre notify", "cadre_notify.py")
+    \\CLAUDE_SESSION_NEEDLES = ("cadre agent-session",)
     \\
-    \\GEMINI_DONE = "python3 ~/.gemini/architect_hook.py done"
-    \\GEMINI_APPROVAL = "python3 ~/.gemini/architect_hook.py awaiting_approval"
-    \\GEMINI_NEEDLES = ("architect_hook.py", "architect notify")
+    \\GEMINI_DONE = "python3 ~/.gemini/cadre_hook.py done"
+    \\GEMINI_APPROVAL = "python3 ~/.gemini/cadre_hook.py awaiting_approval"
+    \\GEMINI_NEEDLES = ("cadre_hook.py", "cadre notify")
     \\
-    \\CODEX_NOTIFY = ["architect", "notify"]
+    \\CODEX_NOTIFY = ["cadre", "notify"]
     \\
-    \\def notify_architect(state: str) -> None:
-    \\    session_id = os.environ.get("ARCHITECT_SESSION_ID")
-    \\    sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\def notify_cadre(state: str) -> None:
+    \\    # ARCHITECT_* fallback: panes spawned before the rename carry the old env.
+    \\    session_id = os.environ.get("CADRE_SESSION_ID") or os.environ.get("ARCHITECT_SESSION_ID")
+    \\    sock_path = os.environ.get("CADRE_NOTIFY_SOCK") or os.environ.get("ARCHITECT_NOTIFY_SOCK")
     \\
     \\    if not session_id or not sock_path:
     \\        return
@@ -106,8 +116,8 @@ const architect_command_script =
     \\        pass
     \\
     \\def send_agent_session(session_id: str) -> None:
-    \\    slot = os.environ.get("ARCHITECT_SESSION_ID")
-    \\    sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\    slot = os.environ.get("CADRE_SESSION_ID")
+    \\    sock_path = os.environ.get("CADRE_NOTIFY_SOCK")
     \\    if not slot or not sock_path or not session_id:
     \\        return
     \\    try:
@@ -126,7 +136,7 @@ const architect_command_script =
     \\
     \\def cmd_agent_session() -> int:
     \\    # Invoked as a Claude Code SessionStart hook. Claude pipes the hook event
-    \\    # JSON (which carries "session_id") to stdin; forward that id to Architect.
+    \\    # JSON (which carries "session_id") to stdin; forward that id to Cadre.
     \\    try:
     \\        raw = sys.stdin.read()
     \\    except Exception:
@@ -216,16 +226,16 @@ const architect_command_script =
     \\
     \\def print_usage() -> None:
     \\    if sys.stderr.isatty():
-    \\        print("Usage: architect notify <state|json>", file=sys.stderr)
-    \\        print("       architect notify  (reads stdin)", file=sys.stderr)
-    \\        print("       architect hook claude|codex|gemini", file=sys.stderr)
-    \\        print("       architect story <filename>", file=sys.stderr)
+    \\        print("Usage: cadre notify <state|json>", file=sys.stderr)
+    \\        print("       cadre notify  (reads stdin)", file=sys.stderr)
+    \\        print("       cadre hook claude|codex|gemini", file=sys.stderr)
+    \\        print("       cadre story <filename>", file=sys.stderr)
     \\
     \\def timestamp_suffix() -> str:
     \\    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     \\
     \\def backup_path(path: str) -> str:
-    \\    return f"{path}.architect.bak.{timestamp_suffix()}"
+    \\    return f"{path}.cadre.bak.{timestamp_suffix()}"
     \\
     \\def backup_file(path: str) -> str | None:
     \\    try:
@@ -288,11 +298,11 @@ const architect_command_script =
     \\        return None
     \\    return value
     \\
-    \\def is_architect_notify(command: list[str]) -> bool:
+    \\def is_cadre_notify(command: list[str]) -> bool:
     \\    if command == CODEX_NOTIFY:
     \\        return True
     \\    for item in command:
-    \\        if "architect_notify.py" in item:
+    \\        if "cadre_notify.py" in item:
     \\            return True
     \\    return False
     \\
@@ -386,6 +396,11 @@ const architect_command_script =
     \\    notification_groups = hooks.setdefault("Notification", [])
     \\    changed = False
     \\
+    \\    for legacy, new in LEGACY_RENAMES:
+    \\        for groups in (stop_groups, notification_groups, hooks.setdefault("SessionStart", [])):
+    \\            if replace_hook_command(groups, legacy, new):
+    \\                changed = True
+    \\
     \\    if not hooks_have_needles(stop_groups, CLAUDE_NEEDLES):
     \\        group = ensure_group(stop_groups)
     \\        group["hooks"].append({"type": "command", "command": CLAUDE_DONE})
@@ -422,20 +437,20 @@ const architect_command_script =
     \\    if not hooks_have_needles(after_groups, GEMINI_NEEDLES):
     \\        group = ensure_matcher_group(after_groups)
     \\        group["hooks"].append({
-    \\            "name": "architect-completion",
+    \\            "name": "cadre-completion",
     \\            "type": "command",
     \\            "command": GEMINI_DONE,
-    \\            "description": "Notify Architect when task completes",
+    \\            "description": "Notify Cadre when task completes",
     \\        })
     \\        changed = True
     \\
     \\    if not hooks_have_needles(notification_groups, GEMINI_NEEDLES):
     \\        group = ensure_matcher_group(notification_groups)
     \\        group["hooks"].append({
-    \\            "name": "architect-approval",
+    \\            "name": "cadre-approval",
     \\            "type": "command",
     \\            "command": GEMINI_APPROVAL,
-    \\            "description": "Notify Architect when waiting for approval",
+    \\            "description": "Notify Cadre when waiting for approval",
     \\        })
     \\        changed = True
     \\
@@ -520,7 +535,7 @@ const architect_command_script =
     \\        print(f"Failed to read {path}", file=sys.stderr)
     \\        return 1
     \\    existing = read_codex_notify(text)
-    \\    if existing is not None and is_architect_notify(existing):
+    \\    if existing is not None and is_cadre_notify(existing):
     \\        print("Codex hooks already installed.")
     \\        return 0
     \\    if existing is not None or has_notify_line(text):
@@ -549,7 +564,7 @@ const architect_command_script =
     \\        if state is None:
     \\            warn_unmapped(raw_arg)
     \\            return 0
-    \\        notify_architect(state)
+    \\        notify_cadre(state)
     \\        return 0
     \\    if cmd == "agent-session":
     \\        return cmd_agent_session()
@@ -568,16 +583,16 @@ const architect_command_script =
     \\        return 1
     \\    if cmd == "story":
     \\        if len(sys.argv) < 3:
-    \\            print("Usage: architect story <filename>", file=sys.stderr)
+    \\            print("Usage: cadre story <filename>", file=sys.stderr)
     \\            return 1
     \\        path = os.path.abspath(sys.argv[2])
     \\        if not os.path.isfile(path):
     \\            print(f"File not found: {path}", file=sys.stderr)
     \\            return 1
-    \\        session_id = os.environ.get("ARCHITECT_SESSION_ID")
-    \\        sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+    \\        session_id = os.environ.get("CADRE_SESSION_ID") or os.environ.get("ARCHITECT_SESSION_ID")
+    \\        sock_path = os.environ.get("CADRE_NOTIFY_SOCK") or os.environ.get("ARCHITECT_NOTIFY_SOCK")
     \\        if not session_id or not sock_path:
-    \\            print("Not running inside Architect", file=sys.stderr)
+    \\            print("Not running inside Cadre", file=sys.stderr)
     \\            return 1
     \\        message = json.dumps({
     \\            "session": int(session_id),
@@ -590,7 +605,7 @@ const architect_command_script =
     \\            sock.sendall(message.encode())
     \\            sock.close()
     \\        except Exception as e:
-    \\            print(f"Failed to notify Architect: {e}", file=sys.stderr)
+    \\            print(f"Failed to notify Cadre: {e}", file=sys.stderr)
     \\            return 1
     \\        return 0
     \\
@@ -602,10 +617,10 @@ const architect_command_script =
     \\
 ;
 
-const architect_zsh_env_script =
-    \\# Generated by Architect to preserve ZDOTDIR startup files.
-    \\orig="${ARCHITECT_ZDOTDIR_ORIG:-}"
-    \\wrapper="${ARCHITECT_ZDOTDIR_WRAPPER:-}"
+const cadre_zsh_env_script =
+    \\# Generated by Cadre to preserve ZDOTDIR startup files.
+    \\orig="${CADRE_ZDOTDIR_ORIG:-}"
+    \\wrapper="${CADRE_ZDOTDIR_WRAPPER:-}"
     \\source_dir="$orig"
     \\if [ -z "$source_dir" ]; then
     \\  source_dir="$HOME"
@@ -627,10 +642,10 @@ const architect_zsh_env_script =
     \\
 ;
 
-const architect_zsh_profile_script =
-    \\# Generated by Architect to preserve PATH injection in login shells.
-    \\orig="${ARCHITECT_ZDOTDIR_ORIG:-}"
-    \\wrapper="${ARCHITECT_ZDOTDIR_WRAPPER:-}"
+const cadre_zsh_profile_script =
+    \\# Generated by Cadre to preserve PATH injection in login shells.
+    \\orig="${CADRE_ZDOTDIR_ORIG:-}"
+    \\wrapper="${CADRE_ZDOTDIR_WRAPPER:-}"
     \\source_dir="$orig"
     \\if [ -z "$source_dir" ]; then
     \\  source_dir="$HOME"
@@ -646,10 +661,10 @@ const architect_zsh_profile_script =
     \\else
     \\  unset ZDOTDIR
     \\fi
-    \\if [ -n "${ARCHITECT_COMMAND_DIR:-}" ]; then
+    \\if [ -n "${CADRE_COMMAND_DIR:-}" ]; then
     \\  case ":$PATH:" in
-    \\    *":$ARCHITECT_COMMAND_DIR:"*) ;;
-    \\    *) PATH="$ARCHITECT_COMMAND_DIR:$PATH" ;;
+    \\    *":$CADRE_COMMAND_DIR:"*) ;;
+    \\    *) PATH="$CADRE_COMMAND_DIR:$PATH" ;;
     \\  esac
     \\  export PATH
     \\fi
@@ -659,10 +674,10 @@ const architect_zsh_profile_script =
     \\
 ;
 
-const architect_zsh_rc_script =
-    \\# Generated by Architect to preserve PATH injection for interactive shells.
-    \\orig="${ARCHITECT_ZDOTDIR_ORIG:-}"
-    \\wrapper="${ARCHITECT_ZDOTDIR_WRAPPER:-}"
+const cadre_zsh_rc_script =
+    \\# Generated by Cadre to preserve PATH injection for interactive shells.
+    \\orig="${CADRE_ZDOTDIR_ORIG:-}"
+    \\wrapper="${CADRE_ZDOTDIR_WRAPPER:-}"
     \\source_dir="$orig"
     \\if [ -z "$source_dir" ]; then
     \\  source_dir="$HOME"
@@ -678,32 +693,32 @@ const architect_zsh_rc_script =
     \\else
     \\  unset ZDOTDIR
     \\fi
-    \\architect_path_guard() {
-    \\  if [ -n "${ARCHITECT_COMMAND_DIR:-}" ]; then
+    \\cadre_path_guard() {
+    \\  if [ -n "${CADRE_COMMAND_DIR:-}" ]; then
     \\    case ":$PATH:" in
-    \\      *":$ARCHITECT_COMMAND_DIR:"*) ;;
-    \\      *) PATH="$ARCHITECT_COMMAND_DIR:$PATH" ;;
+    \\      *":$CADRE_COMMAND_DIR:"*) ;;
+    \\      *) PATH="$CADRE_COMMAND_DIR:$PATH" ;;
     \\    esac
     \\    export PATH
     \\  fi
     \\}
     \\if typeset -p precmd_functions >/dev/null 2>&1; then
     \\  case " ${precmd_functions[@]} " in
-    \\    *" architect_path_guard "*) ;;
-    \\    *) precmd_functions+=(architect_path_guard) ;;
+    \\    *" cadre_path_guard "*) ;;
+    \\    *) precmd_functions+=(cadre_path_guard) ;;
     \\  esac
     \\else
-    \\  precmd_functions=(architect_path_guard)
+    \\  precmd_functions=(cadre_path_guard)
     \\fi
     \\if typeset -p chpwd_functions >/dev/null 2>&1; then
     \\  case " ${chpwd_functions[@]} " in
-    \\    *" architect_path_guard "*) ;;
-    \\    *) chpwd_functions+=(architect_path_guard) ;;
+    \\    *" cadre_path_guard "*) ;;
+    \\    *) chpwd_functions+=(cadre_path_guard) ;;
     \\  esac
     \\else
-    \\  chpwd_functions=(architect_path_guard)
+    \\  chpwd_functions=(cadre_path_guard)
     \\fi
-    \\architect_path_guard
+    \\cadre_path_guard
     \\if [ -n "$orig" ]; then
     \\  ZDOTDIR="$orig"
     \\  export ZDOTDIR
@@ -713,24 +728,24 @@ const architect_zsh_rc_script =
     \\unset orig
     \\unset wrapper
     \\unset source_dir
-    \\# Architect: run the restore/resume command ONCE, after the user's rc has
+    \\# Cadre: run the restore/resume command ONCE, after the user's rc has
     \\# finished loading (so `claude`/PATH are ready) and stdin is the live tty.
     \\# It is executed, never typed into the PTY, so a startup prompt (e.g. an
     \\# oh-my-zsh update [Y/n]) cannot swallow it. Unset first so the launched
     \\# program and any nested shells do not re-run it.
-    \\if [ -n "${ARCHITECT_RESUME_CMD:-}" ]; then
-    \\  architect__resume_cmd="$ARCHITECT_RESUME_CMD"
-    \\  unset ARCHITECT_RESUME_CMD
-    \\  eval "$architect__resume_cmd"
-    \\  unset architect__resume_cmd
+    \\if [ -n "${CADRE_RESUME_CMD:-}" ]; then
+    \\  cadre__resume_cmd="$CADRE_RESUME_CMD"
+    \\  unset CADRE_RESUME_CMD
+    \\  eval "$cadre__resume_cmd"
+    \\  unset cadre__resume_cmd
     \\fi
     \\
 ;
 
-const architect_zsh_login_script =
-    \\# Generated by Architect to preserve ZDOTDIR startup files.
-    \\orig="${ARCHITECT_ZDOTDIR_ORIG:-}"
-    \\wrapper="${ARCHITECT_ZDOTDIR_WRAPPER:-}"
+const cadre_zsh_login_script =
+    \\# Generated by Cadre to preserve ZDOTDIR startup files.
+    \\orig="${CADRE_ZDOTDIR_ORIG:-}"
+    \\wrapper="${CADRE_ZDOTDIR_WRAPPER:-}"
     \\source_dir="$orig"
     \\if [ -z "$source_dir" ]; then
     \\  source_dir="$HOME"
@@ -766,18 +781,18 @@ fn setEnv(name: [:0]const u8, value: [:0]const u8) void {
 }
 
 /// Ensure xterm-ghostty terminfo is compiled and available.
-/// Installs to ~/.cache/architect/terminfo. Must be called from parent process before fork.
+/// Installs to ~/.cache/cadre/terminfo. Must be called from parent process before fork.
 pub fn ensureTerminfoSetup() void {
     if (terminfo_setup_done) return;
     terminfo_setup_done = true;
 
-    // Install to ~/.cache/architect/terminfo
+    // Install to ~/.cache/cadre/terminfo
     const home = posix.getenv("HOME") orelse {
         log.warn("HOME not set, cannot install terminfo, falling back to {s}", .{fallback_term});
         return;
     };
 
-    const cache_dir_z = std.fmt.bufPrintZ(&terminfo_dir_buf, "{s}/.cache/architect/terminfo", .{home}) catch {
+    const cache_dir_z = std.fmt.bufPrintZ(&terminfo_dir_buf, "{s}/.cache/cadre/terminfo", .{home}) catch {
         log.warn("Failed to format terminfo cache path", .{});
         return;
     };
@@ -796,13 +811,13 @@ pub fn ensureTerminfoSetup() void {
         },
     };
 
-    // Create ~/.cache/architect (parent of terminfo dir)
-    var architect_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const architect_dir = std.fmt.bufPrint(&architect_buf, "{s}/.cache/architect", .{home}) catch return;
-    std.fs.makeDirAbsolute(architect_dir) catch |err| switch (err) {
+    // Create ~/.cache/cadre (parent of terminfo dir)
+    var cadre_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cadre_dir = std.fmt.bufPrint(&cadre_buf, "{s}/.cache/cadre", .{home}) catch return;
+    std.fs.makeDirAbsolute(cadre_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            log.warn("Failed to create architect cache dir: {}", .{err});
+            log.warn("Failed to create cadre cache dir: {}", .{err});
             return;
         },
     };
@@ -836,7 +851,7 @@ pub fn ensureTerminfoSetup() void {
         return;
     };
     defer src_file.close();
-    src_file.writeAll(architect_terminfo_src) catch |err| {
+    src_file.writeAll(cadre_terminfo_src) catch |err| {
         log.warn("Failed to write terminfo source: {}", .{err});
         return;
     };
@@ -867,7 +882,7 @@ pub fn ensureTerminfoSetup() void {
         _ = std.c.waitpid(fork_result, &status, 0);
 
         if (wifexited(status) and wexitstatus(status) == 0) {
-            log.info("Successfully compiled {s} terminfo to {s}", .{ architect_term, cache_dir_z });
+            log.info("Successfully compiled {s} terminfo to {s}", .{ cadre_term, cache_dir_z });
             terminfo_dir_z = cache_dir_z;
             terminfo_available = true;
         } else {
@@ -878,38 +893,38 @@ pub fn ensureTerminfoSetup() void {
     }
 }
 
-fn ensureArchitectCommandSetup() void {
-    if (architect_command_setup_done) return;
-    architect_command_setup_done = true;
+fn ensureCadreCommandSetup() void {
+    if (cadre_command_setup_done) return;
+    cadre_command_setup_done = true;
 
     const runtime_dir = posix.getenv("XDG_RUNTIME_DIR");
     const home = posix.getenv("HOME");
     const base_dir_z: [:0]const u8 = if (runtime_dir) |dir|
-        std.fmt.bufPrintZ(&architect_command_base_buf, "{s}/architect", .{dir}) catch |err| {
-            log.warn("failed to format architect runtime path: {}", .{err});
+        std.fmt.bufPrintZ(&cadre_command_base_buf, "{s}/cadre", .{dir}) catch |err| {
+            log.warn("failed to format cadre runtime path: {}", .{err});
             return;
         }
     else if (home) |home_dir|
-        std.fmt.bufPrintZ(&architect_command_base_buf, "{s}/.cache/architect", .{home_dir}) catch |err| {
-            log.warn("failed to format architect cache path: {}", .{err});
+        std.fmt.bufPrintZ(&cadre_command_base_buf, "{s}/.cache/cadre", .{home_dir}) catch |err| {
+            log.warn("failed to format cadre cache path: {}", .{err});
             return;
         }
     else
-        "/tmp/architect";
+        "/tmp/cadre";
 
-    architect_command_base_z = base_dir_z;
+    cadre_command_base_z = base_dir_z;
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
     std.fs.makeDirAbsolute(base_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            log.warn("failed to create architect command base dir: {}", .{err});
+            log.warn("failed to create cadre command base dir: {}", .{err});
             return;
         },
     };
 
-    const bin_dir_z = std.fmt.bufPrintZ(&architect_command_dir_buf, "{s}/bin", .{base_dir}) catch |err| {
-        log.warn("failed to format architect bin path: {}", .{err});
+    const bin_dir_z = std.fmt.bufPrintZ(&cadre_command_dir_buf, "{s}/bin", .{base_dir}) catch |err| {
+        log.warn("failed to format cadre bin path: {}", .{err});
         return;
     };
     const bin_dir = bin_dir_z[0..bin_dir_z.len];
@@ -917,39 +932,39 @@ fn ensureArchitectCommandSetup() void {
     std.fs.makeDirAbsolute(bin_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            log.warn("failed to create architect bin dir: {}", .{err});
+            log.warn("failed to create cadre bin dir: {}", .{err});
             return;
         },
     };
 
-    const script_path_z = std.fmt.bufPrintZ(&architect_command_path_buf, "{s}/architect", .{bin_dir}) catch |err| {
-        log.warn("failed to format architect command path: {}", .{err});
+    const script_path_z = std.fmt.bufPrintZ(&cadre_command_path_buf, "{s}/cadre", .{bin_dir}) catch |err| {
+        log.warn("failed to format cadre command path: {}", .{err});
         return;
     };
 
     const script_file = std.fs.createFileAbsolute(script_path_z, .{ .truncate = true }) catch |err| {
-        log.warn("failed to create architect command: {}", .{err});
+        log.warn("failed to create cadre command: {}", .{err});
         return;
     };
     defer script_file.close();
 
-    script_file.writeAll(architect_command_script) catch |err| {
-        log.warn("failed to write architect command: {}", .{err});
+    script_file.writeAll(cadre_command_script) catch |err| {
+        log.warn("failed to write cadre command: {}", .{err});
         return;
     };
 
     const script_path = std.mem.sliceTo(script_path_z, 0);
     posix.fchmodat(posix.AT.FDCWD, script_path, 0o755, 0) catch |err| {
-        log.warn("failed to chmod architect command: {}", .{err});
+        log.warn("failed to chmod cadre command: {}", .{err});
     };
 
-    architect_command_path_z = script_path_z;
-    architect_command_dir_z = bin_dir_z;
+    cadre_command_path_z = script_path_z;
+    cadre_command_dir_z = bin_dir_z;
 }
 
 /// Best-effort: install Claude's hooks (Stop/Notification for attention, and
 /// SessionStart for LIVE resume-id capture) into ~/.claude/settings.json by
-/// running the materialized `architect hook claude` helper. This is what writes
+/// running the materialized `cadre hook claude` helper. This is what writes
 /// a running agent's resume id into persistence.toml *while it runs* — the only
 /// window a full device reboot leaves, since a reboot SIGKILLs the process with
 /// no chance to scrape the id at shutdown. Without the hook, resume-on-reboot
@@ -958,11 +973,11 @@ fn ensureArchitectCommandSetup() void {
 /// Idempotent: the installer is a no-op when the hooks already exist. Call once
 /// at startup, BEFORE agents spawn, so this run's agents also get the hook.
 /// Never fails the launch — on any error it warns and returns; the user can
-/// still install manually with `architect hook claude`.
+/// still install manually with `cadre hook claude`.
 pub fn ensureClaudeHookInstalled(allocator: std.mem.Allocator) void {
-    ensureArchitectCommandSetup();
-    const script_path = architect_command_path_z orelse {
-        log.warn("skipping Claude hook auto-install: architect command helper unavailable", .{});
+    ensureCadreCommandSetup();
+    const script_path = cadre_command_path_z orelse {
+        log.warn("skipping Claude hook auto-install: cadre command helper unavailable", .{});
         return;
     };
 
@@ -971,12 +986,12 @@ pub fn ensureClaudeHookInstalled(allocator: std.mem.Allocator) void {
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     const term = child.spawnAndWait() catch |err| {
-        log.warn("Claude hook auto-install could not run ({}); resume-across-reboot may be unavailable until you run `architect hook claude`", .{err});
+        log.warn("Claude hook auto-install could not run ({}); resume-across-reboot may be unavailable until you run `cadre hook claude`", .{err});
         return;
     };
     switch (term) {
         .Exited => |code| if (code != 0) {
-            log.warn("Claude hook auto-install exited {d}; resume-across-reboot may be unavailable until you run `architect hook claude`", .{code});
+            log.warn("Claude hook auto-install exited {d}; resume-across-reboot may be unavailable until you run `cadre hook claude`", .{code});
         },
         else => log.warn("Claude hook auto-install terminated abnormally; resume-across-reboot may be unavailable", .{}),
     }
@@ -987,119 +1002,119 @@ fn isShellNamed(shell_path: []const u8, name: []const u8) bool {
     return std.mem.eql(u8, base, name);
 }
 
-fn ensureArchitectZshProfileSetup() void {
-    if (architect_zsh_profile_setup_done) return;
-    architect_zsh_profile_setup_done = true;
+fn ensureCadreZshProfileSetup() void {
+    if (cadre_zsh_profile_setup_done) return;
+    cadre_zsh_profile_setup_done = true;
 
-    const base_dir_z = architect_command_base_z orelse return;
+    const base_dir_z = cadre_command_base_z orelse return;
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
     var zsh_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const zsh_dir_z = std.fmt.bufPrintZ(&zsh_dir_buf, "{s}/zsh", .{base_dir}) catch |err| {
-        log.warn("failed to format architect zsh dir: {}", .{err});
+        log.warn("failed to format cadre zsh dir: {}", .{err});
         return;
     };
 
     std.fs.makeDirAbsolute(zsh_dir_z) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            log.warn("failed to create architect zsh dir: {}", .{err});
+            log.warn("failed to create cadre zsh dir: {}", .{err});
             return;
         },
     };
 
     var env_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const env_path_z = std.fmt.bufPrintZ(&env_path_buf, "{s}/.zshenv", .{zsh_dir_z}) catch |err| {
-        log.warn("failed to format architect zsh env path: {}", .{err});
+        log.warn("failed to format cadre zsh env path: {}", .{err});
         return;
     };
 
     const env_file = std.fs.createFileAbsolute(env_path_z, .{ .truncate = true }) catch |err| {
-        log.warn("failed to create architect zsh env: {}", .{err});
+        log.warn("failed to create cadre zsh env: {}", .{err});
         return;
     };
     defer env_file.close();
 
-    env_file.writeAll(architect_zsh_env_script) catch |err| {
-        log.warn("failed to write architect zsh env: {}", .{err});
+    env_file.writeAll(cadre_zsh_env_script) catch |err| {
+        log.warn("failed to write cadre zsh env: {}", .{err});
         return;
     };
 
     var profile_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const profile_path_z = std.fmt.bufPrintZ(&profile_path_buf, "{s}/.zprofile", .{zsh_dir_z}) catch |err| {
-        log.warn("failed to format architect zsh profile path: {}", .{err});
+        log.warn("failed to format cadre zsh profile path: {}", .{err});
         return;
     };
 
     const profile_file = std.fs.createFileAbsolute(profile_path_z, .{ .truncate = true }) catch |err| {
-        log.warn("failed to create architect zsh profile: {}", .{err});
+        log.warn("failed to create cadre zsh profile: {}", .{err});
         return;
     };
     defer profile_file.close();
 
-    profile_file.writeAll(architect_zsh_profile_script) catch |err| {
-        log.warn("failed to write architect zsh profile: {}", .{err});
+    profile_file.writeAll(cadre_zsh_profile_script) catch |err| {
+        log.warn("failed to write cadre zsh profile: {}", .{err});
         return;
     };
 
     var rc_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const rc_path_z = std.fmt.bufPrintZ(&rc_path_buf, "{s}/.zshrc", .{zsh_dir_z}) catch |err| {
-        log.warn("failed to format architect zsh rc path: {}", .{err});
+        log.warn("failed to format cadre zsh rc path: {}", .{err});
         return;
     };
 
     const rc_file = std.fs.createFileAbsolute(rc_path_z, .{ .truncate = true }) catch |err| {
-        log.warn("failed to create architect zsh rc: {}", .{err});
+        log.warn("failed to create cadre zsh rc: {}", .{err});
         return;
     };
     defer rc_file.close();
 
-    rc_file.writeAll(architect_zsh_rc_script) catch |err| {
-        log.warn("failed to write architect zsh rc: {}", .{err});
+    rc_file.writeAll(cadre_zsh_rc_script) catch |err| {
+        log.warn("failed to write cadre zsh rc: {}", .{err});
         return;
     };
 
     var login_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const login_path_z = std.fmt.bufPrintZ(&login_path_buf, "{s}/.zlogin", .{zsh_dir_z}) catch |err| {
-        log.warn("failed to format architect zsh login path: {}", .{err});
+        log.warn("failed to format cadre zsh login path: {}", .{err});
         return;
     };
 
     const login_file = std.fs.createFileAbsolute(login_path_z, .{ .truncate = true }) catch |err| {
-        log.warn("failed to create architect zsh login: {}", .{err});
+        log.warn("failed to create cadre zsh login: {}", .{err});
         return;
     };
     defer login_file.close();
 
-    login_file.writeAll(architect_zsh_login_script) catch |err| {
-        log.warn("failed to write architect zsh login: {}", .{err});
+    login_file.writeAll(cadre_zsh_login_script) catch |err| {
+        log.warn("failed to write cadre zsh login: {}", .{err});
         return;
     };
 
-    architect_zsh_profile_ready = true;
+    cadre_zsh_profile_ready = true;
 }
 
 fn configureZshPathInjection(shell_path: []const u8) void {
     if (!isShellNamed(shell_path, "zsh")) return;
-    if (!architect_zsh_profile_ready) return;
+    if (!cadre_zsh_profile_ready) return;
 
-    const command_dir_z = architect_command_dir_z orelse return;
-    setEnv("ARCHITECT_COMMAND_DIR", command_dir_z);
+    const command_dir_z = cadre_command_dir_z orelse return;
+    setEnv("CADRE_COMMAND_DIR", command_dir_z);
 
     const empty_zdotdir: [:0]const u8 = "";
     const original_zdotdir = posix.getenv("ZDOTDIR") orelse empty_zdotdir;
-    setEnv("ARCHITECT_ZDOTDIR_ORIG", original_zdotdir);
+    setEnv("CADRE_ZDOTDIR_ORIG", original_zdotdir);
 
-    const base_dir_z = architect_command_base_z orelse return;
+    const base_dir_z = cadre_command_base_z orelse return;
     const base_dir = std.mem.sliceTo(base_dir_z, 0);
 
     var zsh_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const zsh_dir_z = std.fmt.bufPrintZ(&zsh_dir_buf, "{s}/zsh", .{base_dir}) catch |err| {
-        log.warn("failed to format architect zsh dir for env: {}", .{err});
+        log.warn("failed to format cadre zsh dir for env: {}", .{err});
         return;
     };
 
-    setEnv("ARCHITECT_ZDOTDIR_WRAPPER", zsh_dir_z);
+    setEnv("CADRE_ZDOTDIR_WRAPPER", zsh_dir_z);
     setEnv("ZDOTDIR", zsh_dir_z);
 }
 
@@ -1111,8 +1126,8 @@ fn pathContainsEntry(path: []const u8, entry: []const u8) bool {
     return false;
 }
 
-fn ensureArchitectCommandPath() void {
-    const dir_z = architect_command_dir_z orelse return;
+fn ensureCadreCommandPath() void {
+    const dir_z = cadre_command_dir_z orelse return;
     const dir = std.mem.sliceTo(dir_z, 0);
 
     const path_env = posix.getenv("PATH") orelse "";
@@ -1123,7 +1138,7 @@ fn ensureArchitectCommandPath() void {
     const sep_len: usize = if (needs_sep) 1 else 0;
     const total_len = dir.len + sep_len + path_slice.len;
     const buf = std.heap.c_allocator.alloc(u8, total_len + 1) catch |err| {
-        log.warn("failed to allocate PATH for architect command: {}", .{err});
+        log.warn("failed to allocate PATH for cadre command: {}", .{err});
         return;
     };
     defer std.heap.c_allocator.free(buf);
@@ -1141,7 +1156,7 @@ fn ensureArchitectCommandPath() void {
 
     const value_z: [:0]u8 = buf[0..idx :0];
     if (libc.setenv("PATH", value_z.ptr, 1) != 0) {
-        log.warn("failed to set PATH for architect command", .{});
+        log.warn("failed to set PATH for cadre command", .{});
     }
 }
 
@@ -1171,16 +1186,16 @@ pub const Shell = struct {
         ExecFailed,
     } || pty_mod.Pty.Error;
 
-    const name_session: [:0]const u8 = "ARCHITECT_SESSION_ID\x00";
-    const name_sock: [:0]const u8 = "ARCHITECT_NOTIFY_SOCK\x00";
-    const name_resume: [:0]const u8 = "ARCHITECT_RESUME_CMD\x00";
+    const name_session: [:0]const u8 = "CADRE_SESSION_ID\x00";
+    const name_sock: [:0]const u8 = "CADRE_NOTIFY_SOCK\x00";
+    const name_resume: [:0]const u8 = "CADRE_RESUME_CMD\x00";
 
     pub fn spawn(shell_path: []const u8, size: pty_mod.winsize, session_id: [:0]const u8, notify_sock: [:0]const u8, working_dir: ?[:0]const u8, resume_cmd: ?[]const u8, persist: ?tmux.Persist) SpawnError!Shell {
         // Ensure terminfo is set up (parent process, before fork)
         ensureTerminfoSetup();
-        ensureArchitectCommandSetup();
+        ensureCadreCommandSetup();
         if (isShellNamed(shell_path, "zsh")) {
-            ensureArchitectZshProfileSetup();
+            ensureCadreZshProfileSetup();
         }
 
         const pty_instance = try pty_mod.Pty.open(size);
@@ -1227,7 +1242,7 @@ pub const Shell = struct {
                     // We installed to cache, set TERMINFO to point there
                     setEnv("TERMINFO", dir);
                 }
-                setEnv("TERM", architect_term);
+                setEnv("TERM", cadre_term);
             } else {
                 setEnv("TERM", fallback_term);
             }
@@ -1236,13 +1251,13 @@ pub const Shell = struct {
             setDefaultEnv("TERM_PROGRAM", default_term_program);
             // CLIs that feature-detect OSC 8 hyperlink support (Claude Code,
             // anything using the supports-hyperlinks library) don't recognize
-            // TERM_PROGRAM=Architect and fall back to plain colored text, so
-            // Cmd+Click has no URL to open. Architect + ghostty-vt fully
+            // TERM_PROGRAM=Cadre and fall back to plain colored text, so
+            // Cmd+Click has no URL to open. Cadre + ghostty-vt fully
             // support OSC 8, so force emission on. Default-only: a user
             // exporting FORCE_HYPERLINK=0 wins.
             setDefaultEnv("FORCE_HYPERLINK", default_force_hyperlink);
             configureZshPathInjection(shell_path);
-            ensureArchitectCommandPath();
+            ensureCadreCommandPath();
 
             // Change to specified directory or home directory before spawning shell.
             // Try working_dir first, fall back to HOME.
@@ -1262,7 +1277,7 @@ pub const Shell = struct {
 
             if (persist) |p| {
                 // Wrap the shell in a detached tmux session so it survives an
-                // Architect restart. `new-session -A` creates the session on
+                // Cadre restart. `new-session -A` creates the session on
                 // first launch and reattaches to the live one afterward, so the
                 // running agent reappears with full in-memory context instead of
                 // being resumed from a stale transcript. The `-e` vars only take
@@ -1279,8 +1294,8 @@ pub const Shell = struct {
 
                 const cols_z = std.fmt.bufPrintZ(&cols_buf, "{d}", .{size.ws_col}) catch std.c._exit(1);
                 const rows_z = std.fmt.bufPrintZ(&rows_buf, "{d}", .{size.ws_row}) catch std.c._exit(1);
-                const sess_z = std.fmt.bufPrintZ(&sess_buf, "ARCHITECT_SESSION_ID={s}", .{session_id}) catch std.c._exit(1);
-                const sock_z = std.fmt.bufPrintZ(&sock_buf, "ARCHITECT_NOTIFY_SOCK={s}", .{notify_sock}) catch std.c._exit(1);
+                const sess_z = std.fmt.bufPrintZ(&sess_buf, "CADRE_SESSION_ID={s}", .{session_id}) catch std.c._exit(1);
+                const sock_z = std.fmt.bufPrintZ(&sock_buf, "CADRE_NOTIFY_SOCK={s}", .{notify_sock}) catch std.c._exit(1);
 
                 var argv: [26]?[*:0]const u8 = undefined;
                 var n: usize = 0;
@@ -1326,7 +1341,7 @@ pub const Shell = struct {
                 n += 1;
                 argv[n] = "FORCE_HYPERLINK=1";
                 n += 1;
-                // ALWAYS override ARCHITECT_RESUME_CMD per session — empty when
+                // ALWAYS override CADRE_RESUME_CMD per session — empty when
                 // no resume is intended. The tmux SERVER captures the env of
                 // whichever client started it (which can include a resume
                 // command via the setenv above), and sessions inherit server
@@ -1336,11 +1351,11 @@ pub const Shell = struct {
                 n += 1;
                 argv[n] = blk: {
                     if (resume_cmd) |rc| {
-                        if (std.fmt.bufPrintZ(&resume_buf, "ARCHITECT_RESUME_CMD={s}", .{rc})) |rz| {
+                        if (std.fmt.bufPrintZ(&resume_buf, "CADRE_RESUME_CMD={s}", .{rc})) |rz| {
                             break :blk rz.ptr;
                         } else |_| {}
                     }
-                    break :blk "ARCHITECT_RESUME_CMD=";
+                    break :blk "CADRE_RESUME_CMD=";
                 };
                 n += 1;
                 argv[n] = "--";
@@ -1448,7 +1463,7 @@ test "bundled terminfo compiles to legacy short-int format" {
     {
         const src_file = try std.fs.createFileAbsolute(src_path, .{});
         defer src_file.close();
-        try src_file.writeAll(architect_terminfo_src);
+        try src_file.writeAll(cadre_terminfo_src);
     }
 
     const tic_path = findExecutableInPath("tic") orelse return error.SkipZigTest;

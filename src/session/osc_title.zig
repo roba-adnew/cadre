@@ -51,9 +51,9 @@ test "scanOscTitle captures OSC 0/2 titles" {
 }
 
 test "claudeSessionName strips the status prefix and rejects non-Claude titles" {
-    try std.testing.expectEqualStrings("architect", claudeSessionName("\u{2733} architect").?); // ✳ <name>
+    try std.testing.expectEqualStrings("cadre", claudeSessionName("\u{2733} cadre").?); // ✳ <name>
     try std.testing.expectEqualStrings("Research Uniswap v4", claudeSessionName("\u{2802} Research Uniswap v4").?); // ⠂ spinner
-    try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("roba@host:~/repos/architect")); // shell title
+    try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("roba@host:~/repos/cadre")); // shell title
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("\u{2733} Claude Code")); // generic placeholder
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("plain title")); // no glyph prefix
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("")); // empty

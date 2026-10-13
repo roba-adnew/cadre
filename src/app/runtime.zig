@@ -25,7 +25,7 @@ const macos_input = @import("../platform/macos_input_source.zig");
 const macos_titlebar = @import("../platform/macos_titlebar.zig");
 
 /// User-facing app name (window title bar, bundle display name). Internal
-/// identifiers (config dir, sockets, tmux prefix, env vars) keep "architect".
+/// identifiers (config dir, sockets, tmux prefix, env vars) keep "cadre".
 pub const app_name: [*:0]const u8 = "CADRE";
 const input = @import("../input/mapper.zig");
 const renderer_mod = @import("../render/renderer.zig");
@@ -260,7 +260,7 @@ fn persistedAgentSessionId(session: *const SessionState, agent_type: ?[]const u8
 }
 
 /// Build "claude --resume <id>" (etc.) from a restored entry and stash it on the session as
-/// `resume_cmd`, to be injected as ARCHITECT_RESUME_CMD at spawn time. Must be called BEFORE
+/// `resume_cmd`, to be injected as CADRE_RESUME_CMD at spawn time. Must be called BEFORE
 /// the session is spawned. No-op for entries without a captured agent session.
 fn setResumeCommandFromEntry(
     session: *SessionState,
@@ -857,7 +857,7 @@ fn handleExternalSpawnRequest(
     }
 
     const plan = planExternalSpawnSlot(sessions, grid.cols, grid.rows, anim_state.focused_session) orelse {
-        completeExternalSpawnFailure(pending, .full_grid, "all Architect terminal slots are in use");
+        completeExternalSpawnFailure(pending, .full_grid, "all Cadre terminal slots are in use");
         return;
     };
 
@@ -1166,7 +1166,7 @@ fn handleExternalCloseRequest(
     const idx = resolveCloseTargetIndex(sessions, pending.request) orelse {
         pending.completion.complete(.{ .failure = .{
             .code = .not_found,
-            .message = "no Architect session matches the requested identifier",
+            .message = "no Cadre session matches the requested identifier",
         } });
         return;
     };
@@ -1676,7 +1676,7 @@ pub fn run() !void {
     persistence.font_size = std.math.clamp(persistence.font_size, min_font_size, max_font_size);
 
     // Mint the per-install tmux-name epoch (first launch after upgrade) and hand
-    // it to the tmux layer BEFORE any session spawns, so `architect-<epoch>-<n>`
+    // it to the tmux layer BEFORE any session spawns, so `cadre-<epoch>-<n>`
     // names are used from the very first buildPersist. Save immediately so the
     // epoch is stable across relaunch (reattach depends on the name being equal).
     if (persistence.ensurePersistEpoch(allocator) catch |err| blk: {
@@ -1774,6 +1774,7 @@ pub fn run() !void {
         notify_stop.store(true, .seq_cst);
         notify_thread.join();
     }
+    notify.linkLegacySocketPath(allocator, notify_sock);
     const control_thread = try control.startControlThread(
         allocator,
         control_sock,
@@ -1788,8 +1789,8 @@ pub fn run() !void {
     );
     defer {
         control_stop.store(true, .seq_cst);
-        control.failPending(&control_queue, allocator, .app_not_running, "Architect is shutting down");
-        control.failPendingClose(&close_queue, allocator, .app_not_running, "Architect is shutting down");
+        control.failPending(&control_queue, allocator, .app_not_running, "Cadre is shutting down");
+        control.failPendingClose(&close_queue, allocator, .app_not_running, "Cadre is shutting down");
         control_thread.join();
         control.cleanupControlFiles(control_sock, control_discovery_path);
     }
@@ -1805,7 +1806,7 @@ pub fn run() !void {
     const renderer = sdl.renderer;
 
     var font_size: c_int = persistence.font_size;
-    // Whether the Architect window is the frontmost app (drives the accent
+    // Whether the Cadre window is the frontmost app (drives the accent
     // overlay). Assume focused at launch; updated by SDL focus events.
     var window_focused: bool = true;
     var window_width_points: c_int = sdl.window_w;
@@ -1962,7 +1963,7 @@ pub fn run() !void {
             } else null;
 
             // Build the resume command BEFORE spawning: it is injected as
-            // ARCHITECT_RESUME_CMD into the shell env and run once by the wrapper rc
+            // CADRE_RESUME_CMD into the shell env and run once by the wrapper rc
             // after the user's rc loads — no stdin race, can't be eaten by a startup prompt.
             if (duplicate_resume_id) |id| {
                 log.warn("restored terminal {d}: agent session id {s} already claimed by an earlier terminal; not resuming it twice", .{ new_idx, id });
@@ -3179,7 +3180,7 @@ pub fn run() !void {
                         else => false,
                     };
                     // Chime when an agent needs you or finishes, but only while
-                    // Architect is backgrounded (foreground already shows the border).
+                    // Cadre is backgrounded (foreground already shows the border).
                     if (wants_attention and config.notifications.sound and !window_focused) {
                         notify_sound.play(allocator, s.state);
                     }
@@ -3865,7 +3866,7 @@ pub fn run() !void {
             &theme,
         );
 
-        // E2E harness observability (no-op unless ARCHITECT_TEST_MODE is set).
+        // E2E harness observability (no-op unless CADRE_TEST_MODE is set).
         test_probe.writeState(allocator, &ui_render_host);
 
         const animating = anim_state.mode != .Grid and anim_state.mode != .Full;
@@ -4132,7 +4133,7 @@ test "claimPersistIndex swaps identities and never duplicates them" {
     s2.persist_index = 2;
     const sessions = [_]*SessionState{ &s0, &s1, &s2 };
 
-    // Slot 0 reclaims identity 2 (its terminal was architect-<epoch>-2 last run):
+    // Slot 0 reclaims identity 2 (its terminal was cadre-<epoch>-2 last run):
     // the previous holder inherits slot 0's default so indices stay unique.
     claimPersistIndex(&sessions, 0, 2);
     try std.testing.expectEqual(@as(usize, 2), s0.persist_index);
@@ -4216,7 +4217,7 @@ test "compactSessions parks hidden sessions at the tail" {
     // persist_index is NEVER rewritten by compaction — it stays bound to the
     // object (its creation-order id), even as slot_index moves to the new
     // position. This is the invariant that stops a fresh tmux spawn from reusing
-    // a live session's `architect-<n>` name and cloning it.
+    // a live session's `cadre-<n>` name and cloning it.
     try std.testing.expectEqual(@as(usize, 2), sessions[0].persist_index); // s_v1
     try std.testing.expectEqual(@as(usize, 0), sessions[0].slot_index);
     try std.testing.expectEqual(@as(usize, 0), sessions[1].persist_index); // s_v2

@@ -1,5 +1,5 @@
 //! Plays a short macOS system sound for agent notifications (needs-approval /
-//! done), so you hear it when Architect is in the background.
+//! done), so you hear it when Cadre is in the background.
 const std = @import("std");
 const builtin = @import("builtin");
 const SessionStatus = @import("app/app_state.zig").SessionStatus;

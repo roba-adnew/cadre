@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Architect notification helper for Codex / Claude Code / Gemini.
+Cadre notification helper for Codex / Claude Code / Gemini.
 
 Accepts either a simple state argument or a Codex/Gemini JSON payload and
-forwards the corresponding Architect state over the per-session Unix
+forwards the corresponding Cadre state over the per-session Unix
 socket.
 
 Usage examples:
-    architect_notify.py start
-    architect_notify.py awaiting_approval
-    architect_notify.py done
-    architect_notify.py '{"type":"agent-turn-complete","thread-id":"..."}'
+    cadre_notify.py start
+    cadre_notify.py awaiting_approval
+    cadre_notify.py done
+    cadre_notify.py '{"type":"agent-turn-complete","thread-id":"..."}'
 """
 
 import json
@@ -19,9 +19,9 @@ import socket
 import sys
 
 
-def notify_architect(state: str) -> None:
-    session_id = os.environ.get("ARCHITECT_SESSION_ID")
-    sock_path = os.environ.get("ARCHITECT_NOTIFY_SOCK")
+def notify_cadre(state: str) -> None:
+    session_id = os.environ.get("CADRE_SESSION_ID")
+    sock_path = os.environ.get("CADRE_NOTIFY_SOCK")
 
     if not session_id or not sock_path:
         return
@@ -127,4 +127,4 @@ if __name__ == "__main__":
         warn_unmapped(raw_arg)
         sys.exit(0)
 
-    notify_architect(state)
+    notify_cadre(state)

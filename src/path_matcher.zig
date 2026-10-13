@@ -80,9 +80,9 @@ test "findPathMatchAtPosition - trailing dot trimmed" {
 }
 
 test "findPathMatchAtPosition - tilde home path" {
-    const t = "~/.config/architect/config.toml";
+    const t = "~/.config/cadre/config.toml";
     const m = findPathMatchAtPosition(t, 5) orelse return error.TestExpectedMatch;
-    try std.testing.expectEqualStrings("~/.config/architect/config.toml", m.path);
+    try std.testing.expectEqualStrings("~/.config/cadre/config.toml", m.path);
 }
 
 test "findPathMatchAtPosition - plain words are not paths" {

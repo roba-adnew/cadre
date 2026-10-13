@@ -534,7 +534,7 @@ fn joinRunText(allocator: std.mem.Allocator, runs: []const RenderRun) ![]u8 {
 test "renderer wraps paragraphs" {
     const allocator = std.testing.allocator;
 
-    var blocks = try parser.parse(allocator, "hello world from architect");
+    var blocks = try parser.parse(allocator, "hello world from cadre");
     defer parser.freeBlocks(allocator, &blocks);
 
     var lines = try buildLines(allocator, blocks.items, 10);
@@ -633,7 +633,7 @@ test "renderer uses emoji markers for task list items" {
 test "renderer preserves href on link runs" {
     const allocator = std.testing.allocator;
 
-    var blocks = try parser.parse(allocator, "[Architect](https://example.com)\n");
+    var blocks = try parser.parse(allocator, "[Cadre](https://example.com)\n");
     defer parser.freeBlocks(allocator, &blocks);
 
     var lines = try buildLines(allocator, blocks.items, 80);

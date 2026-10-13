@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Architect is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
+Cadre is a **single-process, layered desktop application** built in Zig that functions as a grid-based terminal multiplexer optimized for multi-agent AI coding workflows. It follows a five-layer architecture: a thin entrypoint delegates to an application runtime that owns the frame loop, platform abstraction (SDL3), session management (PTY + ghostty-vt terminal emulation), scene rendering, and a component-based UI overlay system. The UI and terminal loop run on the main thread; background threads are used only for bounded auxiliary work (notification socket listener, local control socket listener, and quit-time agent-teardown worker). The frame loop uses a wakeable wait model: active work continues at the normal frame cadence, while idle frames block in SDL until either a wake-worthy event arrives or the next idle deadline expires. The application uses an action-queue pattern for UI-to-app mutations, request queues for external socket inputs, epoch-based cache invalidation for efficient rendering, and a vtable-based component registry for extensible UI overlays. Renderer cache entries are reused for both grid tiles and the steady-state full-screen terminal view; overlays remain live unless an effect needs them baked into the cached texture.
 
 ## Component Diagram
 
@@ -10,7 +10,7 @@ Architect is a **single-process, layered desktop application** built in Zig that
 graph TD
     subgraph Entrypoint
         MAIN["main.zig"]
-        MCP["mcp/main.zig<br/><i>architect-mcp stdio MCP helper</i>"]
+        MCP["mcp/main.zig<br/><i>cadre-mcp stdio MCP helper</i>"]
     end
 
     subgraph Application Layer
@@ -348,7 +348,7 @@ Status semantics: `awaiting_approval` ("needs you") and `done` are sticky
 attention cues — no hook event fires when an agent exits, so they persist until
 either a newer status arrives or the user focuses/reveals the terminal, which
 acknowledges both back to `idle` (`SessionViewState.acknowledgeAttention`).
-The Claude Notification hook is installed in stdin mode (`architect notify`),
+The Claude Notification hook is installed in stdin mode (`cadre notify`),
 which maps only `permission_prompt` / `agent_needs_input` / `elicitation_dialog`
 payloads to `awaiting_approval` and ignores the rest (`idle_prompt`,
 `auth_success`, ...), so an idle session is never flagged as needing the user.
@@ -357,7 +357,7 @@ payloads to `awaiting_approval` and ignores the rest (`idle_prompt`,
 
 ```
 MCP client
-    | launches architect-mcp over stdio
+    | launches cadre-mcp over stdio
     v
 src/mcp/main.zig
     | JSON-RPC initialize/tools/list/tools/call
@@ -365,7 +365,7 @@ src/mcp/main.zig
     v
 app/control.zig
     | scans per-instance discovery files in XDG_RUNTIME_DIR or stable per-user runtime dir
-    | connects to architect_control_<pid>.sock
+    | connects to cadre_control_<pid>.sock
     | spawn requests omit "op"; close requests carry "op":"close"
     v
 Control socket listener thread in the running app
@@ -381,7 +381,7 @@ Control response
     | spawn: status + session_id + slot_index, or stable error code
     | close: status + session_id, or stable error code (e.g. not_found)
     v
-architect-mcp MCP tool result
+cadre-mcp MCP tool result
 ```
 
 ### Logging Path
@@ -396,10 +396,10 @@ main.zig std_options.logFn -> logging.zig
 Structured log line (local timestamp with timezone offset, level, scope, msg, optional fields)
     | append to active file
     v
-~/Library/Logs/Architect/architect.log (macOS)
+~/Library/Logs/Cadre/cadre.log (macOS)
     | if size > 10 MiB
     v
-Rotate: rename active file to architect-<UTC timestamp>.log and continue in new active file
+Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new active file
 ```
 
 ### Entry Points
@@ -409,8 +409,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | SDL event queue | Keyboard, mouse, window events | Primary user interaction |
 | PTY read | Shell process stdout/stderr | Terminal content updates |
 | Unix domain socket | External AI tools | Status notifications (JSON) |
-| Unix domain socket | `architect-mcp` | Local `spawn_session` / `close_session` control requests |
-| Config files | `~/.config/architect/` | Startup configuration and persistence |
+| Unix domain socket | `cadre-mcp` | Local `spawn_session` / `close_session` control requests |
+| Config files | `~/.config/cadre/` | Startup configuration and persistence |
 
 ### Storage
 
@@ -419,11 +419,11 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Terminal cell buffer | In-memory (ghostty-vt) | Current screen + scrollback (up to 10KB default) |
 | Glyph cache | GPU textures + in-memory LRU | Up to 4096 shaped glyph textures |
 | Render cache | GPU textures per session | Cached terminal renders, epoch-invalidated |
-| config.toml | `~/.config/architect/config.toml` | User preferences (font, theme, UI flags, worktree location) |
-| persistence.toml | `~/.config/architect/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
-| architect.log + archives | `~/Library/Logs/Architect/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
-| diff_comments.json | `<repo>/.architect/diff_comments.json` | Per-repo inline diff review comments (unsent) |
-| architect_control_<uid>_<pid>.json | `XDG_RUNTIME_DIR`, or `~/Library/Caches/Architect/runtime` on macOS / `~/.cache/architect/runtime` elsewhere | Per-instance discovery file pointing `architect-mcp` at a running app's local control socket |
+| config.toml | `~/.config/cadre/config.toml` | User preferences (font, theme, UI flags, worktree location) |
+| persistence.toml | `~/.config/cadre/persistence.toml` | Runtime state (window pos, font size, terminal cwds, agent session IDs) |
+| cadre.log + archives | `~/Library/Logs/Cadre/` | Structured application logs with size-based rotation (10 MiB active-file threshold) |
+| diff_comments.json | `<repo>/.cadre/diff_comments.json` | Per-repo inline diff review comments (unsent) |
+| cadre_control_<uid>_<pid>.json | `XDG_RUNTIME_DIR`, or `~/Library/Caches/Cadre/runtime` on macOS / `~/.cache/cadre/runtime` elsewhere | Per-instance discovery file pointing `cadre-mcp` at a running app's local control socket |
 
 ### Exit Points
 
@@ -440,9 +440,9 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `architect-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session` and `close_session` tools. | `main()`, `run()` | `app/control` module import, std |
+| `mcp/main.zig` | Separate `cadre-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session` and `close_session` tools. | `main()`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime, frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, frame loop internals | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
-| `app/control.zig` | Local control channel shared by the app and `architect-mcp`: spawn/close request schemas, discovery file, Unix socket listener, request queues, and response serialization. Close requests are discriminated on the wire by `"op":"close"`. | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `CloseRequest`, `CloseResponse`, `CloseQueue`, `startControlThread()`, `connectAndSendSpawnRequest()`, `connectAndSendCloseRequest()` | std (socket, thread, JSON) |
+| `app/control.zig` | Local control channel shared by the app and `cadre-mcp`: spawn/close request schemas, discovery file, Unix socket listener, request queues, and response serialization. Close requests are discriminated on the wire by `"op":"close"`. | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `CloseRequest`, `CloseResponse`, `CloseQueue`, `startControlThread()`, `connectAndSendSpawnRequest()`, `connectAndSendCloseRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 initialization, window management, HiDPI | `init()`, `createWindow()`, `createRenderer()` | `c` |
@@ -453,7 +453,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 | `session/notify.zig` | Background notification socket thread and queue; handles status and story notifications | `NotificationQueue`, `Notification` (union: status/story), `startThread()`, `push()`, `drain()` | std (socket, thread) |
 | `session/hosting.zig` | Detect hidden sessions serving a local TCP port ("hosting" badge in the hidden switcher): one `lsof` + one `ps` per poll, walking listener parent chains to each session's root pid (tmux pane pid when tmux-backed). macOS only; polled by `app/runtime.zig` only while the switcher modal is open | `detectHosting()` | `session/state`, `tmux`, std (subprocess) |
 | `session/*` (shell, pty, vt_stream, cwd) | Shell spawning, PTY abstraction, VT parsing, working directory detection | `spawn()`, `Pty`, `VtStream.processBytes()`, `getCwd()` | std (posix), ghostty-vt |
-| `tmux.zig` | tmux-backed session persistence (on by default when `tmux` is present): resolves tmux, manages a stable private socket + transparent-layer config, and builds the per-session `new-session -A` wrapper so shells/agents survive an Architect restart and reattach live (see ADR-015) | `Persist`, `buildPersist()`, `freePersist()` | std (posix) |
+| `tmux.zig` | tmux-backed session persistence (on by default when `tmux` is present): resolves tmux, manages a stable private socket + transparent-layer config, and builds the per-session `new-session -A` wrapper so shells/agents survive an Cadre restart and reattach live (see ADR-015) | `Persist`, `buildPersist()`, `freePersist()` | std (posix) |
 | `render/renderer.zig` | Scene rendering: terminals, borders, animations, terminal scrollbar painting | `render()`, `RenderCache`, per-session texture management | `font`, `font_cache`, `gfx/*`, `anim/easing`, `app/app_state`, `ui/components/scrollbar`, `c` |
 | `font.zig` + `font_cache.zig` | Font rendering, HarfBuzz shaping, glyph LRU cache, shared font cache | `Font`, `openFont()`, `renderGlyph()`, `FontCache`, `getOrCreate()` | `font_paths`, `c` (SDL3_ttf) |
 | `gfx/*` (box_drawing, primitives) | Procedural box-drawing characters (U+2500-U+257F), rounded/thick border helpers, bezier arrow rendering | `renderBoxDrawing()`, `drawRoundedRect()`, `drawThickBorder()`, `fillRoundedRect()`, `renderBezierArrow()` | `c` |
@@ -547,7 +547,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-009: Thread-Safe Notification Queue for External Tool Integration
 
-- **Decision:** External AI tools communicate with Architect via a Unix domain socket. A dedicated background thread accepts connections, parses single-line JSON messages, and pushes to a thread-safe queue. The main loop drains this queue once per frame.
+- **Decision:** External AI tools communicate with Cadre via a Unix domain socket. A dedicated background thread accepts connections, parses single-line JSON messages, and pushes to a thread-safe queue. The main loop drains this queue once per frame.
 - **Context:** AI coding agents (Claude Code, Codex, Gemini) need to signal state changes (start, awaiting_approval, done) to trigger visual indicators. Socket I/O must not block the render thread, but state updates must be applied synchronously during the frame loop to avoid race conditions with rendering.
 - **Alternatives considered:**
   - *Polling a file or pipe* -- rejected because it introduces latency and filesystem overhead; sockets provide immediate delivery.
@@ -584,7 +584,7 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-013: Synchronous I/O in UI Overlays for Git and Small-File Persistence
 
-- **Decision:** UI overlay components may perform synchronous I/O on the main thread for two categories of operations: (1) running short-lived `git` commands (e.g., `git diff`, `git rev-parse`) whose output is needed immediately for rendering, and (2) reading/writing small per-repo data files (e.g., `<repo>/.architect/diff_comments.json`).
+- **Decision:** UI overlay components may perform synchronous I/O on the main thread for two categories of operations: (1) running short-lived `git` commands (e.g., `git diff`, `git rev-parse`) whose output is needed immediately for rendering, and (2) reading/writing small per-repo data files (e.g., `<repo>/.cadre/diff_comments.json`).
 - **Context:** The diff overlay needs `git diff` output to render its content and persists inline review comments as a small JSON file. ADR-009 establishes that blocking I/O should go on a background thread, but these operations complete in single-digit milliseconds for typical repositories and small data files. Introducing a background thread with a callback-based rendering pipeline for each git command would add significant complexity (deferred rendering, loading states, race conditions with overlay visibility) for negligible latency improvement.
 - **Constraints:** This exception applies only when the data is small and the command is fast. Large or potentially slow operations (e.g., network I/O, cloning, `git log` on deep histories) must still use the background thread pattern from ADR-009.
 - **Alternatives considered:**
@@ -594,8 +594,8 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-014: Agent Session Detection, Persistence, and Resumption
 
-- **Decision:** Architect detects running AI agents at quit time, captures their session UUIDs, persists them in `persistence.toml`, and automatically resumes them on next launch. The quit-time teardown runs asynchronously on a background worker thread while the main thread keeps rendering terminal updates.
-- **Context:** To persist an agent's session ID for resumption on next launch, Architect must capture the session UUID that the agent prints to the PTY during graceful shutdown. The quit sequence is: detect running agent via macOS `sysctl`/process inspection → start a background teardown worker → worker launches one teardown task per detected agent session in parallel; each task injects `Ctrl+C` twice (all supported agents), waits, retries once, and finally sends SIGTERM as last resort → main thread continues polling PTY output/rendering terminals (including post-exit PTY drain only for sessions with active quit capture while they are still allocated), so users can see agents stopping in real time and trailing output is not dropped → a full-screen `quit_blocking_overlay` blocks all input and renders a shimmering gray veil while teardown is in progress → after worker completion, runtime performs a bounded drain-until-quiet pass over all affected PTYs to capture trailing output that arrived after the worker reported done → Architect extracts UUIDs only from PTY bytes captured after shutdown begins (not full history) and persists successful captures to `persistence.toml`.
+- **Decision:** Cadre detects running AI agents at quit time, captures their session UUIDs, persists them in `persistence.toml`, and automatically resumes them on next launch. The quit-time teardown runs asynchronously on a background worker thread while the main thread keeps rendering terminal updates.
+- **Context:** To persist an agent's session ID for resumption on next launch, Cadre must capture the session UUID that the agent prints to the PTY during graceful shutdown. The quit sequence is: detect running agent via macOS `sysctl`/process inspection → start a background teardown worker → worker launches one teardown task per detected agent session in parallel; each task injects `Ctrl+C` twice (all supported agents), waits, retries once, and finally sends SIGTERM as last resort → main thread continues polling PTY output/rendering terminals (including post-exit PTY drain only for sessions with active quit capture while they are still allocated), so users can see agents stopping in real time and trailing output is not dropped → a full-screen `quit_blocking_overlay` blocks all input and renders a shimmering gray veil while teardown is in progress → after worker completion, runtime performs a bounded drain-until-quiet pass over all affected PTYs to capture trailing output that arrived after the worker reported done → Cadre extracts UUIDs only from PTY bytes captured after shutdown begins (not full history) and persists successful captures to `persistence.toml`.
 - **Agent detection strategy:** `session/state.detectForegroundAgent()` reads the foreground process-group leader's process image name (`kp_proc.p_comm`) via `sysctl KERN_PROC_PID`. If `p_comm` is `"claude"`, `"codex"`, or `"gemini"`, the agent is identified directly. If `p_comm` is `"node"`, `KERN_PROCARGS2` is read to inspect `argv[1]`; if the script path contains `"claude"`, `"codex"`, or `"gemini"`, the corresponding agent is matched. This uniform approach covers both direct binaries and Node.js-wrapped agents.
 - **Resume-command injection:** On next launch, `app/runtime.zig` reads the persisted `agent_type` and `agent_session_id` from `persistence.toml`. If both are present, it appends the resume command (e.g., `claude --resume <uuid>`) to `session.pending_write` immediately after spawning the shell. The shell reads this input once it is ready, so no timing synchronization is needed.
 - **Layer boundary:** `app/runtime.zig` owns quit orchestration (worker lifecycle, PTY exit signaling by fd, persistence timing) and UI blocking state. `session/state.zig` owns agent detection and session metadata access. `app/terminal_history.zig` owns text analysis (UUID extraction). UI components (`ui/components/quit_blocking_overlay.zig`) own the visual/input lock behavior.
@@ -607,26 +607,26 @@ Rotate: rename active file to architect-<UTC timestamp>.log and continue in new 
 
 ### ADR-015: tmux-Backed Persistent Agent Sessions (on by default)
 
-- **Decision:** On by default whenever `tmux` is on `PATH` (originally gated behind an `ARCHITECT_PERSIST_SESSIONS=1` opt-in, since removed — the feature is now inherent), spawn each shell *inside* a detached tmux session (`tmux -S <socket> -f <conf> new-session -A -s architect-<epoch>-<n> ... -- <shell> -l`) instead of as a direct child of Architect. On restart, `new-session -A` reattaches to the live session, so a running agent (claude/codex/gemini) keeps its full in-memory context instead of being killed at quit and resumed from a possibly-stale local transcript.
-- **Context:** ADR-014 tears agents down at quit, scrapes their session UUID, and resumes via `claude --resume <uuid>` on next launch. When Claude Code's cloud bridge stalls local transcript writes, that resume reloads a rewound conversation — recent context appears lost. Making the agent process itself survive the restart sidesteps the resume path entirely for the common case (Architect restart while the machine stays up).
+- **Decision:** On by default whenever `tmux` is on `PATH` (originally gated behind an `CADRE_PERSIST_SESSIONS=1` opt-in, since removed — the feature is now inherent), spawn each shell *inside* a detached tmux session (`tmux -S <socket> -f <conf> new-session -A -s cadre-<epoch>-<n> ... -- <shell> -l`) instead of as a direct child of Cadre. On restart, `new-session -A` reattaches to the live session, so a running agent (claude/codex/gemini) keeps its full in-memory context instead of being killed at quit and resumed from a possibly-stale local transcript.
+- **Context:** ADR-014 tears agents down at quit, scrapes their session UUID, and resumes via `claude --resume <uuid>` on next launch. When Claude Code's cloud bridge stalls local transcript writes, that resume reloads a rewound conversation — recent context appears lost. Making the agent process itself survive the restart sidesteps the resume path entirely for the common case (Cadre restart while the machine stays up).
 - **Mechanism:**
-  - tmux's server double-forks out of Architect's process tree, so quitting Architect (or the reload script) only drops the thin client; the server, shell, and agent live on detached.
-  - `new-session -A` is create-or-attach: it creates the session on first launch and reattaches to the live one afterward. `-e` environment (session id, notify socket, resume command, `FORCE_HYPERLINK=1`) applies only on fresh creation, so the resume-command fallback runs after a reboot but stays inert on a live reattach. `FORCE_HYPERLINK=1` rides along both here and in the child env (`setDefaultEnv` in `shell.zig`) because hyperlink-capable CLIs (Claude Code, supports-hyperlinks users) don't recognize `TERM_PROGRAM=Architect` and would otherwise strip OSC 8 links down to plain colored text; the `-e` copy covers new sessions on tmux servers whose global env predates the variable.
-  - Resume-id capture (what makes the reboot fallback actually work): the `-e ARCHITECT_RESUME_CMD` only helps if the agent's session id is already in `persistence.toml` before the reboot — a power cycle SIGKILLs the process with no chance to scrape the id at shutdown. The id is captured *live* while the agent runs, via Claude's `SessionStart` hook (`architect agent-session` → notify socket → the `.agent_session` handler → a same-frame persistence flush). Architect auto-installs that hook at startup, before the restore spawns, via `shell.ensureClaudeHookInstalled` (runs `architect hook claude`, which is idempotent and starts from an empty settings file on a fresh machine), so resume-across-reboot works without the user first running `architect hook claude` by hand.
-  - A generated config (`architect-tmux.conf`) makes tmux a transparent layer: no status bar, `prefix None` + `unbind-key -a` (so Ctrl-B etc. pass through to the agent), `escape-time 0`, 50k-line scrollback, truecolor passthrough, `destroy-unattached off`.
+  - tmux's server double-forks out of Cadre's process tree, so quitting Cadre (or the reload script) only drops the thin client; the server, shell, and agent live on detached.
+  - `new-session -A` is create-or-attach: it creates the session on first launch and reattaches to the live one afterward. `-e` environment (session id, notify socket, resume command, `FORCE_HYPERLINK=1`) applies only on fresh creation, so the resume-command fallback runs after a reboot but stays inert on a live reattach. `FORCE_HYPERLINK=1` rides along both here and in the child env (`setDefaultEnv` in `shell.zig`) because hyperlink-capable CLIs (Claude Code, supports-hyperlinks users) don't recognize `TERM_PROGRAM=Cadre` and would otherwise strip OSC 8 links down to plain colored text; the `-e` copy covers new sessions on tmux servers whose global env predates the variable.
+  - Resume-id capture (what makes the reboot fallback actually work): the `-e CADRE_RESUME_CMD` only helps if the agent's session id is already in `persistence.toml` before the reboot — a power cycle SIGKILLs the process with no chance to scrape the id at shutdown. The id is captured *live* while the agent runs, via Claude's `SessionStart` hook (`cadre agent-session` → notify socket → the `.agent_session` handler → a same-frame persistence flush). Cadre auto-installs that hook at startup, before the restore spawns, via `shell.ensureClaudeHookInstalled` (runs `cadre hook claude`, which is idempotent and starts from an empty settings file on a fresh machine), so resume-across-reboot works without the user first running `cadre hook claude` by hand.
+  - A generated config (`cadre-tmux.conf`) makes tmux a transparent layer: no status bar, `prefix None` + `unbind-key -a` (so Ctrl-B etc. pass through to the agent), `escape-time 0`, 50k-line scrollback, truecolor passthrough, `destroy-unattached off`.
   - Quit needs no special-casing: at quit the PTY's foreground process is the tmux client, not the agent, so `detectForegroundAgent` returns null and the ADR-014 teardown naturally no-ops — the agent is never interrupted.
-  - Identity is per session: the session is named `architect-<epoch>-<persist_index>`. `persist_index` is a per-session identity assigned at creation and never rewritten by grid compaction; `epoch` is a random per-install token (`config.Persistence.persist_epoch`, minted on first launch and persisted). The socket is a single stable per-user path, so reattach finds the session across restarts. (Keying the name off the mutable grid `slot_index` used to let a new terminal attach to — and clone — a live session; see the slot-name limitation below.)
-  - Graveyard drain: the socket is shared across every launch and tmux never auto-removes a detached session, so old sessions piled up unbounded — and a bare `architect-<n>` from a new launch collided with a same-named fossil, making `new-session -A` reattach to the wrong (weeks-old) session. The `<epoch>` prefix makes each install's names disjoint from other installs' and from all pre-epoch fossils, so a new run never reattaches to a stranger's session. After reattaching to its own sessions at startup (which then hold a client and read as *attached*), `tmux.reapDetachedSessions` kills every *detached* session on the socket, draining the graveyard while sparing live panes (ours and any other running instance's).
-  - Scrollback routing: the shell runs full-screen *inside* tmux, so scrolled-off lines live in tmux's history buffer, not Architect's ghostty-vt scrollback. Wheel events are routed to tmux copy-mode out-of-band (`tmux.scrollHistory` → `copy-mode -e` + `send-keys -X -N <n> scroll-{up,down}`), so panes scroll in both grid and focus view without turning on tmux mouse mode (which would hijack clicks/drag-select).
+  - Identity is per session: the session is named `cadre-<epoch>-<persist_index>`. `persist_index` is a per-session identity assigned at creation and never rewritten by grid compaction; `epoch` is a random per-install token (`config.Persistence.persist_epoch`, minted on first launch and persisted). The socket is a single stable per-user path, so reattach finds the session across restarts. (Keying the name off the mutable grid `slot_index` used to let a new terminal attach to — and clone — a live session; see the slot-name limitation below.)
+  - Graveyard drain: the socket is shared across every launch and tmux never auto-removes a detached session, so old sessions piled up unbounded — and a bare `cadre-<n>` from a new launch collided with a same-named fossil, making `new-session -A` reattach to the wrong (weeks-old) session. The `<epoch>` prefix makes each install's names disjoint from other installs' and from all pre-epoch fossils, so a new run never reattaches to a stranger's session. After reattaching to its own sessions at startup (which then hold a client and read as *attached*), `tmux.reapDetachedSessions` kills every *detached* session on the socket, draining the graveyard while sparing live panes (ours and any other running instance's).
+  - Scrollback routing: the shell runs full-screen *inside* tmux, so scrolled-off lines live in tmux's history buffer, not Cadre's ghostty-vt scrollback. Wheel events are routed to tmux copy-mode out-of-band (`tmux.scrollHistory` → `copy-mode -e` + `send-keys -X -N <n> scroll-{up,down}`), so panes scroll in both grid and focus view without turning on tmux mouse mode (which would hijack clicks/drag-select).
 - **Layer boundary:** `tmux.zig` (a session-layer helper alongside `shell.zig`/`pty.zig`) owns tmux specifics; `shell.zig` builds the wrapped argv in the forked child; `session/state.zig` decides per-spawn whether to wrap. Null (tmux not on `PATH`) spawns a direct shell exactly as before, so the feature degrades gracefully when tmux is absent.
 - **Known limitations (accepted; phase-1 scope):**
   - *Attention border on reattach* — status notifications route by a per-spawn numeric id over a pid-based socket, both regenerated each launch, so a reattached agent's status (awaiting_approval, etc.) is not delivered/matched. Fixing it correctly requires a stable, persisted per-session identity.
-  - *Scrollback under tmux* — live history lives in tmux's 50k-line buffer, not Architect's. Wheel-scroll reaches it via tmux copy-mode (`tmux.scrollHistory`). copy-mode is modal, but the next keystroke cancels it (`tmux.cancelCopyMode`, called from `SessionState.sendInput` when `scrolled_in_copy_mode` is set) so typing snaps back to the live prompt; scrolling to the bottom also auto-exits (`-e`). On reattach, history above the visible screen is still not repainted Architect-side. Conversation state is intact.
+  - *Scrollback under tmux* — live history lives in tmux's 50k-line buffer, not Cadre's. Wheel-scroll reaches it via tmux copy-mode (`tmux.scrollHistory`). copy-mode is modal, but the next keystroke cancels it (`tmux.cancelCopyMode`, called from `SessionState.sendInput` when `scrolled_in_copy_mode` is set) so typing snaps back to the live prompt; scrolling to the bottom also auto-exits (`-e`). On reattach, history above the visible screen is still not repainted Cadre-side. Conversation state is intact.
   - *Full reboot* — when the tmux server is gone there is no live session to reattach; the slot spawns a fresh shell and re-runs `claude --resume <id>` from the id captured live before the reboot (see *Resume-id capture* above). Parity with an app-restart is limited to the *resumable* state — same terminals, slots, and cwd, each agent resumed from its transcript — not the live in-memory context, which cannot survive a power cycle. Resume still degrades to a bare shell in the saved cwd when no id was captured: Codex/Gemini have no live-capture hook yet (their id is only scraped at graceful quit, which a reboot skips), and non-macOS restores no terminals at all.
-  - *Single instance* — the socket is shared per user. Two instances that share the same `persistence.toml` also share the `<epoch>` and so would still collide on `architect-<epoch>-<n>`; instances under different `ARCHITECT_CONFIG_DIR`s get distinct epochs and no longer collide. The startup graveyard drain only kills *detached* sessions, so it never nukes a concurrently-running instance's live panes.
-  - *Slot-name stability* — the session name follows `architect-<epoch>-<persist_index>`: `persist_index` (stable within a run) fixed the bug where a new terminal would attach to and clone a live session as the grid reordered; the `<epoch>` fixed the cross-launch bug where a new run reattached to an unrelated fossil session of the same name on the shared socket. Across a full restart the reattach still maps by physical slot, so a persisted per-conversation token is still needed to guarantee the right agent lands in the right slot.
+  - *Single instance* — the socket is shared per user. Two instances that share the same `persistence.toml` also share the `<epoch>` and so would still collide on `cadre-<epoch>-<n>`; instances under different `CADRE_CONFIG_DIR`s get distinct epochs and no longer collide. The startup graveyard drain only kills *detached* sessions, so it never nukes a concurrently-running instance's live panes.
+  - *Slot-name stability* — the session name follows `cadre-<epoch>-<persist_index>`: `persist_index` (stable within a run) fixed the bug where a new terminal would attach to and clone a live session as the grid reordered; the `<epoch>` fixed the cross-launch bug where a new run reattached to an unrelated fossil session of the same name on the shared socket. Across a full restart the reattach still maps by physical slot, so a persisted per-conversation token is still needed to guarantee the right agent lands in the right slot.
   - *TERM inside tmux* is `screen-256color` (+truecolor), not `xterm-ghostty`; some ghostty-specific keyboard-protocol features do not pass through tmux.
 - **Alternatives considered:**
   - *dtach / abduco* — lighter, but no scrollback preservation on reattach (blank history above the input box) and an extra dependency; tmux was already installed and repaints the visible screen.
-  - *An Architect-owned detached PTY daemon* — no external dependency and full control of scrollback replay, but the most engineering and the highest risk (PTY/socket/detach edge cases).
+  - *An Cadre-owned detached PTY daemon* — no external dependency and full control of scrollback replay, but the most engineering and the highest risk (PTY/socket/detach edge cases).
 - **Date:** 2026-06-22 (persistent sessions, phase 1)

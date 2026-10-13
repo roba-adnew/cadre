@@ -1,8 +1,8 @@
-//! End-to-end test observability (opt-in via ARCHITECT_TEST_MODE=1).
+//! End-to-end test observability (opt-in via CADRE_TEST_MODE=1).
 //!
 //! When enabled, the runtime calls `writeState` once per rendered frame with the
 //! per-frame UiHost snapshot. We serialize the parts a UI test cares about (view
-//! mode, focused pane, grid size, per-pane state) as JSON to ARCHITECT_STATE_FILE
+//! mode, focused pane, grid size, per-pane state) as JSON to CADRE_STATE_FILE
 //! via a temp-file + rename so a reader never sees a torn write. This is a
 //! read-only observer of UI state — it never mutates anything — and is a complete
 //! no-op in production (the env vars are unset), so it adds zero cost there.
@@ -18,16 +18,16 @@ const log = std.log.scoped(.test_probe);
 /// True only when the harness asked for test mode. Keep this cheap — it runs per
 /// frame — but reading one env var is fine and keeps the gate in one place.
 pub fn enabled() bool {
-    const v = posix.getenv("ARCHITECT_TEST_MODE") orelse return false;
+    const v = posix.getenv("CADRE_TEST_MODE") orelse return false;
     return std.mem.eql(u8, v, "1") or std.mem.eql(u8, v, "true");
 }
 
-/// Serialize the current UI state to ARCHITECT_STATE_FILE. Best-effort: any
+/// Serialize the current UI state to CADRE_STATE_FILE. Best-effort: any
 /// failure is logged and swallowed so a flaky test filesystem can never take
 /// down the app. No-op unless both the test-mode flag and the target path are set.
 pub fn writeState(allocator: std.mem.Allocator, host: *const ui_mod.UiHost) void {
     if (!enabled()) return;
-    const path = posix.getenv("ARCHITECT_STATE_FILE") orelse return;
+    const path = posix.getenv("CADRE_STATE_FILE") orelse return;
     writeStateInner(allocator, path, host) catch |err| {
         log.warn("failed to write test state to {s}: {}", .{ path, err });
     };

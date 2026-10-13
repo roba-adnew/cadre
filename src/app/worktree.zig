@@ -39,7 +39,7 @@ pub fn changeSessionDirectory(session: *SessionState, allocator: std.mem.Allocat
 
 /// Resolve the absolute worktree target directory for a new worktree.
 /// If `config_dir` is set, expands `~` and appends `<repo-subpath>/<worktree-name>`.
-/// Otherwise defaults to `~/.architect-worktrees/<repo-subpath>/<worktree-name>`.
+/// Otherwise defaults to `~/.cadre-worktrees/<repo-subpath>/<worktree-name>`.
 /// The repo subpath is relative to $HOME when possible, or the full path minus
 /// leading `/` otherwise, to avoid collisions between repos with the same basename.
 pub fn resolveWorktreeDir(allocator: std.mem.Allocator, repo_root: []const u8, name: []const u8, config_dir: ?[]const u8) ![]u8 {
@@ -60,7 +60,7 @@ pub fn resolveWorktreeDir(allocator: std.mem.Allocator, repo_root: []const u8, n
 /// and returns absolute paths as-is. Returns default when config_dir is null.
 fn resolveConfigDir(allocator: std.mem.Allocator, home: []const u8, config_dir: ?[]const u8) ![]u8 {
     const dir = config_dir orelse
-        return std.fs.path.join(allocator, &.{ home, ".architect-worktrees" });
+        return std.fs.path.join(allocator, &.{ home, ".cadre-worktrees" });
 
     if (dir.len > 0 and dir[0] == '~') {
         if (dir.len == 1) return allocator.dupe(u8, home);
@@ -123,7 +123,7 @@ pub fn buildCreateWorktreeCommand(
         try cmd.appendSlice(
             allocator,
             " && if [ -x script/setup ]; then script/setup;" ++
-                " elif [ -x .architect-init.sh ]; then ./.architect-init.sh; fi",
+                " elif [ -x .cadre-init.sh ]; then ./.cadre-init.sh; fi",
         );
     }
 

@@ -25,15 +25,15 @@ jobs:
     # until the 6-hour Actions limit. A normal job finishes in well under 10m.
     timeout-minutes: 30
     env:
-      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache
-      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/architect/.zig-cache/local
-      # Prevent ghostty (dependency) from reading the repository git tag of Architect
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/cadre/.zig-cache
+      ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/cadre/.zig-cache/local
+      # Prevent ghostty (dependency) from reading the repository git tag of Cadre
       # and thinking it is its own release tag.
-      GIT_CEILING_DIRECTORIES: ${{ github.workspace }}/architect/.zig-cache
+      GIT_CEILING_DIRECTORIES: ${{ github.workspace }}/cadre/.zig-cache
     steps:
       - uses: actions/checkout@v7
         with:
-          path: architect
+          path: cadre
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -44,8 +44,8 @@ jobs:
       - name: Cache Zig package cache
         uses: actions/cache@v5
         with:
-          path: architect/.zig-cache
-          key: zig-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('architect/build.zig.zon') }}
+          path: cadre/.zig-cache
+          key: zig-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('cadre/build.zig.zon') }}
           restore-keys: |
             zig-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -63,7 +63,7 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
       - name: Build release
         timeout-minutes: 20
@@ -73,27 +73,27 @@ jobs:
             if [ $i -eq 3 ]; then exit 1; fi
             sleep 5
           done
-        working-directory: architect
+        working-directory: cadre
 
       - name: Bundle libraries and package
         run: |
           chmod +x scripts/bundle-macos.sh
-          ./scripts/bundle-macos.sh zig-out/bin/architect release zig-out/bin/architect-mcp
+          ./scripts/bundle-macos.sh zig-out/bin/cadre release zig-out/bin/cadre-mcp
           cd release
-          tar -czf architect-macos-${{ matrix.arch }}.tar.gz Architect.app
-        working-directory: architect
+          tar -czf cadre-macos-${{ matrix.arch }}.tar.gz Cadre.app
+        working-directory: cadre
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: architect-macos-${{ matrix.arch }}
-          path: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
+          name: cadre-macos-${{ matrix.arch }}
+          path: cadre/release/cadre-macos-${{ matrix.arch }}.tar.gz
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: architect/release/architect-macos-${{ matrix.arch }}.tar.gz
+          files: cadre/release/cadre-macos-${{ matrix.arch }}.tar.gz
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -123,11 +123,11 @@ jobs:
           echo "Computed SHA256: $SHA256"
 
           # Update the formula file
-          sed -i "s|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v[^\"]*\.tar\.gz\"|url \"$TARBALL_URL\"|" Formula/architect.rb
-          sed -i "0,/sha256 \"[^\"]*\"/s//sha256 \"$SHA256\"/" Formula/architect.rb
+          sed -i "s|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v[^\"]*\.tar\.gz\"|url \"$TARBALL_URL\"|" Formula/cadre.rb
+          sed -i "0,/sha256 \"[^\"]*\"/s//sha256 \"$SHA256\"/" Formula/cadre.rb
 
           # Check if there were changes
-          if git diff --quiet Formula/architect.rb; then
+          if git diff --quiet Formula/cadre.rb; then
             echo "No changes to formula"
             exit 0
           fi
@@ -137,7 +137,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH_NAME"
-          git add Formula/architect.rb
+          git add Formula/cadre.rb
           git commit -m "Update Homebrew formula to ${VERSION}"
           git push origin "$BRANCH_NAME"
 

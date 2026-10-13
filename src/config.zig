@@ -89,13 +89,13 @@ pub const UiConfig = struct {
     show_hotkey_feedback: bool = true,
     enable_animations: bool = true,
     /// Opacity (0-255) of the dashed accent border drawn around the selected
-    /// pane when the Architect window is NOT the frontmost app. 0 disables it.
+    /// pane when the Cadre window is NOT the frontmost app. 0 disables it.
     inactive_overlay_alpha: i32 = 130,
 };
 
 pub const NotificationsConfig = struct {
     /// Play a macOS system sound when an agent needs approval or finishes while
-    /// Architect is in the background. macOS only. Set false to silence.
+    /// Cadre is in the background. macOS only. Set false to silence.
     sound: bool = true,
 };
 
@@ -392,7 +392,7 @@ pub const Persistence = struct {
         agent_session_id: ?[]const u8 = null,
         /// Restored as spawned-but-hidden (pulled out of the grid via Cmd+J).
         hidden: bool = false,
-        /// The terminal's tmux identity (`architect-<epoch>-<persist_index>`).
+        /// The terminal's tmux identity (`cadre-<epoch>-<persist_index>`).
         /// Persisted so a restored terminal reattaches to ITS OWN session —
         /// restoring by grid position instead silently orphaned any terminal
         /// whose index had drifted from its position (creates/hides/closes),
@@ -414,9 +414,9 @@ pub const Persistence = struct {
     /// survives relaunch. 0 = unset -> fall back to [font]/[grid] config.
     grid_font_scale: f32 = 0,
     /// Random per-install token mixed into tmux session names
-    /// (`architect-<epoch>-<index>`). tmux sessions live on one shared socket
+    /// (`cadre-<epoch>-<index>`). tmux sessions live on one shared socket
     /// across every launch and are never auto-cleared, so a bare
-    /// `architect-<index>` from THIS launch collided with a fossil of the same
+    /// `cadre-<index>` from THIS launch collided with a fossil of the same
     /// name from a previous launch and `new-session -A` reattached to the wrong
     /// (old) session. The epoch makes each install's names disjoint. Owned when
     /// non-empty; generated on first load via ensurePersistEpoch. "" = unset.
@@ -724,14 +724,14 @@ pub const Persistence = struct {
     }
 
     pub fn getPersistencePath(allocator: std.mem.Allocator) ![]u8 {
-        // ARCHITECT_CONFIG_DIR overrides the config/persistence location so an
+        // CADRE_CONFIG_DIR overrides the config/persistence location so an
         // isolated dev instance can run alongside the daily app without touching
         // its config or resuming its sessions.
-        if (std.posix.getenv("ARCHITECT_CONFIG_DIR")) |dir| {
+        if (std.posix.getenv("CADRE_CONFIG_DIR")) |dir| {
             return try fs.path.join(allocator, &[_][]const u8{ dir, "persistence.toml" });
         }
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "persistence.toml" });
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "cadre", "persistence.toml" });
     }
 
     pub fn appendTerminalEntry(
@@ -1039,12 +1039,12 @@ pub const Config = struct {
     }
 
     pub fn getConfigPath(allocator: std.mem.Allocator) ![]u8 {
-        // See getPersistencePath: ARCHITECT_CONFIG_DIR isolates a dev instance.
-        if (std.posix.getenv("ARCHITECT_CONFIG_DIR")) |dir| {
+        // See getPersistencePath: CADRE_CONFIG_DIR isolates a dev instance.
+        if (std.posix.getenv("CADRE_CONFIG_DIR")) |dir| {
             return try fs.path.join(allocator, &[_][]const u8{ dir, "config.toml" });
         }
         const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
-        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "architect", "config.toml" });
+        return try fs.path.join(allocator, &[_][]const u8{ home, ".config", "cadre", "config.toml" });
     }
 
     pub fn createDefaultConfigFile(allocator: std.mem.Allocator) SaveError!void {
@@ -1058,7 +1058,7 @@ pub const Config = struct {
         };
 
         const template =
-            \\# Architect configuration file (user-editable)
+            \\# Cadre configuration file (user-editable)
             \\# This file is read-only to the application - edit freely via Cmd+,
             \\# Changes take effect on next launch.
             \\#
@@ -1097,7 +1097,7 @@ pub const Config = struct {
             \\# Notification options
             \\# [notifications]
             \\# sound = true  # macOS chime when an agent needs approval or finishes
-            \\#               # while Architect is in the background
+            \\#               # while Cadre is in the background
             \\
             \\# Paste options
             \\# [paste]
@@ -1145,7 +1145,7 @@ pub const Config = struct {
             \\
             \\# Worktree options
             \\# [worktree]
-            \\# directory = "~/.architect-worktrees"  # Base directory for new worktrees (default: ~/.architect-worktrees)
+            \\# directory = "~/.cadre-worktrees"  # Base directory for new worktrees (default: ~/.cadre-worktrees)
             \\# init_command = "script/setup"          # Command to run after creating a worktree
             \\
         ;

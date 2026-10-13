@@ -42,7 +42,7 @@ pub const ctrl_end_sequence = "\x1b[1;5F";
 
 /// Cmd+Shift+Down → "jump to bottom". We send ctrl_end_sequence for this combo
 /// because (a) encodeKeyWithMod maps the bare End key to Ctrl+E and drops the
-/// Ctrl modifier, so Architect never emits a real Ctrl+End, and (b) macOS window
+/// Ctrl modifier, so Cadre never emits a real Ctrl+End, and (b) macOS window
 /// managers commonly grab the physical Ctrl+End (Ctrl+Fn+→) for window tiling.
 /// Cmd+Shift+Down is the Cmd-qualified sibling of the Shift+Down grid-nav and is
 /// otherwise unbound. gridNavShortcut excludes Cmd, so this combo reaches here.

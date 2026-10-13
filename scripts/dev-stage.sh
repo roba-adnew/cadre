@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Architect from the CURRENT worktree and swap the fresh bundle into
+# Build Cadre from the CURRENT worktree and swap the fresh bundle into
 # /Applications so it takes effect on your NEXT quit + reopen of the daily app —
 # no forced restart, no killing live agents mid-turn.
 #
@@ -53,28 +53,28 @@ fi
 # shellcheck source=scripts/dev-build-env.sh
 . "$ROOT/scripts/dev-build-env.sh"
 
-APP="/Applications/Architect.app"
+APP="/Applications/Cadre.app"
 # Stage on the SAME volume as /Applications so the final swap is an atomic
 # rename, not a slow cross-device copy that widens the window where the app path
 # is missing. A dot-prefixed dir keeps it out of Finder/Launchpad.
-STAGE_PARENT="/Applications/.architect-staged"
+STAGE_PARENT="/Applications/.cadre-staged"
 if [ "$dry_run" = true ]; then
     STAGE_PARENT="$(mktemp -d)"
 fi
 
 if [ "$build_debug" = true ]; then
-    echo "==> Building Architect (Debug)..."
+    echo "==> Building Cadre (Debug)..."
     zig build
 else
-    echo "==> Building Architect (ReleaseFast)..."
+    echo "==> Building Cadre (ReleaseFast)..."
     zig build -Doptimize=ReleaseFast
 fi
 
 echo "==> Packaging staged bundle..."
 rm -rf "$STAGE_PARENT"
 mkdir -p "$STAGE_PARENT"
-./scripts/bundle-macos.sh zig-out/bin/architect "$STAGE_PARENT" zig-out/bin/architect-mcp >/dev/null
-staged="$STAGE_PARENT/Architect.app"
+./scripts/bundle-macos.sh zig-out/bin/cadre "$STAGE_PARENT" zig-out/bin/cadre-mcp >/dev/null
+staged="$STAGE_PARENT/Cadre.app"
 if [ ! -d "$staged" ]; then
     echo "error: bundling did not produce $staged" >&2
     exit 1
@@ -87,7 +87,7 @@ if [ "$dry_run" = true ]; then
     exit 0
 fi
 
-# Apply immediately via an atomic rename. This is safe even while Architect is
+# Apply immediately via an atomic rename. This is safe even while Cadre is
 # running: the live process keeps its old (renamed-aside, then unlinked) inode,
 # so the kernel never SIGKILLs it on a code-signature page fault, and the NEXT
 # launch picks up the new bundle. Replaces an earlier swap-on-quit watcher that
@@ -97,4 +97,4 @@ rm -rf "$APP.prev"
 mv "$APP" "$APP.prev"
 mv "$staged" "$APP"
 rm -rf "$APP.prev" "$STAGE_PARENT"
-echo "==> Done. Your next Cmd+Q + reopen of Architect comes up on the new build."
+echo "==> Done. Your next Cmd+Q + reopen of Cadre comes up on the new build."

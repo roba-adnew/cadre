@@ -71,7 +71,7 @@ long build cycle. **Next step to confirm:** check out `main`, run `zig build tes
    unit tests (gate behind an env flag), or `posix.close` stdout in the child before exec.
 3. The grid logic itself needs no further unit work — the 3 tests are correct; once the suite stops
    hanging they should pass. Re-run `zig build test --summary all` and check the count delta.
-4. **Visual validation of grid placement** is separate from unit tests — reload the running Architect
+4. **Visual validation of grid placement** is separate from unit tests — reload the running Cadre
    app (see below) and exercise: hide several terminals (⌘J), then ⌘N — new terminals must fill the
    freed cells without expanding past blanks; restart with hidden sessions persisted and confirm they
    park off-grid.
