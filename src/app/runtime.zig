@@ -1178,7 +1178,7 @@ const App = struct {
     /// Window that most recently gained focus: target for QUIT, control
     /// spawns, story overlays and windowless events.
     last_focused: ?*Window,
-    /// Cmd+Shift+N request, fulfilled after the event drain.
+    /// Cmd+N request, fulfilled after the event drain.
     pending_new_window: ?NewWindowRequest,
     /// Window to tear down at the end of this frame.
     closing_window: ?*Window,
@@ -1387,8 +1387,17 @@ const App = struct {
     /// step (after the event drain). A lone visible terminal stays put.
     fn requestMoveToNewWindow(self: *App, from: *Window, idx: usize) void {
         const now = std.time.milliTimestamp();
-        if (self.pending_new_window != null or self.closing_window == from) return;
-        if (idx >= from.sessions.len or !from.sessions[idx].isVisible()) return;
+        log.info("pop-out requested: window {d} idx {d} visible {d} pending {} closing {} mode {s}", .{
+            from.window_id, idx, countVisibleSessions(from.sessions), self.pending_new_window != null, self.closing_window == from, @tagName(from.anim_state.mode),
+        });
+        if (self.pending_new_window != null or self.closing_window == from) {
+            log.warn("pop-out ignored: a window request or close is already pending", .{});
+            return;
+        }
+        if (idx >= from.sessions.len or !from.sessions[idx].isVisible()) {
+            log.warn("pop-out ignored: focused slot {d} is not a visible terminal", .{idx});
+            return;
+        }
         if (countVisibleSessions(from.sessions) <= 1) {
             from.ui.showToast("Already its own window", now);
             return;
@@ -1562,7 +1571,9 @@ const App = struct {
             return;
         }
         for (window.sessions) |session| {
-            if (session.spawned) session.despawn(allocator);
+            if (!session.spawned) continue;
+            log.info("closing window {d}: discarding terminal persist_index {d} (tmux {})", .{ window.window_id, session.persist_index, session.tmux_backed });
+            session.despawn(allocator);
         }
         const idx = self.windowIndex(window);
         _ = self.windows.orderedRemove(idx);
@@ -1623,7 +1634,7 @@ const App = struct {
 /// Upper bound on simultaneously open windows (sizes the per-frame slice
 /// scratch; the session pool itself grows on demand).
 pub const max_windows: usize = 8;
-/// Cascade offset for a window opened with Cmd+Shift+N, in points.
+/// Cascade offset for a window opened with Cmd+N, in points.
 const new_window_offset_points: c_int = 40;
 
 const NewWindowRequest = struct {
@@ -2750,8 +2761,8 @@ const Window = struct {
                     return;
                 }
 
-                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_N) {
-                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧N", now);
+                if (has_gui and !has_blocking_mod and !has_shift and key == c.SDLK_N) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘N", now);
                     app.requestNewWindow(self);
                     return;
                 }
@@ -3069,8 +3080,8 @@ const Window = struct {
                         };
                         self.ui.showToast(notification_msg, now);
                     }
-                } else if (key == c.SDLK_N and has_gui and !has_blocking_mod and !has_shift and (self.anim_state.mode == .Full or self.anim_state.mode == .Grid)) {
-                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘N", now);
+                } else if (key == c.SDLK_T and has_gui and !has_blocking_mod and !has_shift and (self.anim_state.mode == .Full or self.anim_state.mode == .Grid)) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘T", now);
 
                     // Grid sizing is driven by VISIBLE sessions; hidden ones are
                     // parked off-grid by compactSessions and must not reserve a cell.

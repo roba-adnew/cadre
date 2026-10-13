@@ -508,10 +508,11 @@ pub fn killSession(allocator: std.mem.Allocator, persist_index: usize) void {
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
-    _ = child.spawnAndWait() catch |err| {
+    const term = child.spawnAndWait() catch |err| {
         log.warn("killSession: {s} failed: {}", .{ target, err });
         return;
     };
+    log.info("killSession: {s} -> {}", .{ target, term });
 }
 
 /// Whether a persistent session for this index exists on the socket right now.

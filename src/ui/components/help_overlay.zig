@@ -13,7 +13,11 @@ const Shortcut = struct { key: []const u8, desc: []const u8 };
 const shortcuts = [_]Shortcut{
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Focus selected pane" },
-    .{ .key = "⌘T", .desc = "Open worktree picker" },
+    .{ .key = "⌘T", .desc = "New terminal" },
+    .{ .key = "⌘N", .desc = "New window" },
+    .{ .key = "⌘⇧P", .desc = "Pop terminal out to its own window" },
+    .{ .key = "⌘⇧W", .desc = "Close window" },
+    .{ .key = "⌘⇧T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },
     .{ .key = "⌘?", .desc = "Open help" },
     .{ .key = "⌘D", .desc = "Show git diff" },

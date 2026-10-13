@@ -219,7 +219,8 @@ pub const WorktreeOverlayComponent = struct {
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
 
-                if (has_gui and !has_blocking_mod and key == c.SDLK_T) {
+                const has_shift = (mod & c.SDL_KMOD_SHIFT) != 0;
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_T) {
                     if (self.overlay.state == .Open) {
                         self.overlay.startCollapsing(host.now_ms);
                     } else {
@@ -382,7 +383,7 @@ pub const WorktreeOverlayComponent = struct {
         const font_size = dpi.scale(@max(12, @min(20, @divFloor(rect.h, 2))), ui_scale);
         const fonts = cache.get(font_size) catch return;
 
-        const glyph = "⌘T";
+        const glyph = "⌘⇧T";
         const fg = theme.foreground;
         const fg_color = c.SDL_Color{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 };
         const surface = c.TTF_RenderText_Blended(fonts.regular, glyph.ptr, @intCast(glyph.len), fg_color) orelse return;
