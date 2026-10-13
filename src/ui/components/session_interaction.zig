@@ -43,6 +43,24 @@ pub const reorder_hold_ms: i64 = 220;
 pub const reorder_drag_slop_px: f32 = 6.0;
 const ReorderPhase = enum { idle, pending, active };
 
+/// A press withheld from a mouse-tracking program while a lone-terminal hold
+/// resolves (Full view). Forwarded late for a click/drag, dropped for a drag.
+const DeferredPress = struct { button: u8, x: c_int, y: c_int };
+
+/// What a pending hold should do now. Pure so it is testable.
+const HoldOutcome = enum { forward_now, promote, wait };
+fn holdOutcome(elapsed_ms: i64, moved: bool, released: bool) HoldOutcome {
+    if (released or moved) return .forward_now;
+    if (elapsed_ms >= reorder_hold_ms) return .promote;
+    return .wait;
+}
+
+/// The hold-to-drag gesture lives in grid view, and in Full view when the
+/// window holds exactly one visible terminal (the window IS the tile).
+fn dragAllowedFor(mode: app_state.ViewMode, visible: usize) bool {
+    return inGridView(mode) or (mode == .Full and visible == 1);
+}
+
 pub const SessionInteractionComponent = struct {
     allocator: std.mem.Allocator,
     sessions: []*SessionState,
@@ -75,6 +93,12 @@ pub const SessionInteractionComponent = struct {
     /// Slot to outline while ANOTHER window's drag hovers over this window
     /// (set per frame by the app); draws the same lift cue as a local drag.
     drop_hint: ?usize = null,
+    /// Full-view lone-terminal hold: press withheld from the program.
+    deferred_press: ?DeferredPress = null,
+
+    fn dragAllowed(self: *const SessionInteractionComponent, host: *const types.UiHost) bool {
+        return dragAllowedFor(host.view_mode, visibleCount(self.sessions));
+    }
 
     pub fn isReordering(self: *const SessionInteractionComponent) bool {
         return self.reorder_phase == .active;
@@ -233,6 +257,8 @@ pub const SessionInteractionComponent = struct {
         self.reorder_phase = .active;
         self.reorder_origin_slot = self.reorder_slot;
         self.deferred_select = null;
+        // The program never sees a press that became a drag.
+        self.deferred_press = null;
         if (self.grid_selection_idx) |idx| {
             if (idx < self.views.len) endSelection(&self.views[idx]);
             self.grid_selection_idx = null;
@@ -249,8 +275,58 @@ pub const SessionInteractionComponent = struct {
     fn endReorder(self: *SessionInteractionComponent) void {
         self.reorder_phase = .idle;
         self.deferred_select = null;
+        self.deferred_press = null;
         self.updateCursor(.arrow);
         self.reorder_first_frame.markTransition();
+    }
+
+    /// Encode and send a button press to the focused program at the cell under
+    /// (x, y). Returns false when the button or cell can't be mapped.
+    fn forwardPressToProgram(self: *SessionInteractionComponent, host: *const types.UiHost, focused: *SessionState, button: u8, x: c_int, y: c_int) bool {
+        const terminal = &(focused.terminal orelse return false);
+        const btn = sdlToMouseButton(button) orelse return false;
+        const cell = fullViewCellFromMouse(x, y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale) orelse return false;
+        const sgr = terminal.modes.get(.mouse_format_sgr);
+        var buf: [32]u8 = undefined;
+        const n = input.encodeMouseButton(btn, cell.col, cell.row, true, sgr, &buf);
+        if (n > 0) {
+            focused.sendInput(buf[0..n]) catch |err| {
+                log.warn("failed to send mouse button: {}", .{err});
+            };
+        }
+        return true;
+    }
+
+    /// The hold resolved as a click or an ordinary drag: deliver the press the
+    /// program was owed, so what follows (motion, release) reads as one gesture.
+    fn flushDeferredPress(self: *SessionInteractionComponent, host: *const types.UiHost) void {
+        const press = self.deferred_press orelse return;
+        self.deferred_press = null;
+        if (host.focused_session >= self.sessions.len) return;
+        const focused = self.sessions[host.focused_session];
+        if (!focused.spawned) return;
+        _ = self.forwardPressToProgram(host, focused, press.button, press.x, press.y);
+    }
+
+    /// Release of an active drag. Inside the window the re-slots were already
+    /// committed live (grid) or there was nothing to re-slot (Full), so it just
+    /// ends; outside, the tile is handed to the app, which picks between another
+    /// window and a brand-new one at the drop point.
+    fn finishActiveDrag(self: *SessionInteractionComponent, host: *const types.UiHost, up_x: c_int, up_y: c_int, actions: *types.UiActionQueue) void {
+        if (!pointerInsideWindow(up_x, up_y, host.window_w, host.window_h)) {
+            var gx: f32 = 0;
+            var gy: f32 = 0;
+            _ = c.SDL_GetGlobalMouseState(&gx, &gy);
+            actions.append(.{ .DragSessionOut = .{
+                .idx = self.reorder_slot,
+                .origin = self.reorder_origin_slot,
+                .screen_x = @intFromFloat(gx),
+                .screen_y = @intFromFloat(gy),
+            } }) catch |err| {
+                log.warn("failed to queue drag-out of slot {d}: {}", .{ self.reorder_slot, err });
+            };
+        }
+        self.endReorder();
     }
 
     fn handleEvent(self_ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, actions: *types.UiActionQueue) bool {
@@ -419,20 +495,29 @@ pub const SessionInteractionComponent = struct {
                             }
                         }
 
-                        if (forwardMouseToProgram(terminalHasMouseTracking(terminal), view.is_viewing_scrollback, shift_held)) {
-                            if (sdlToMouseButton(event.button.button)) |btn| {
-                                if (fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale)) |cell| {
-                                    const sgr = terminal.modes.get(.mouse_format_sgr);
-                                    var buf: [32]u8 = undefined;
-                                    const n = input.encodeMouseButton(btn, cell.col, cell.row, true, sgr, &buf);
-                                    if (n > 0) {
-                                        focused.sendInput(buf[0..n]) catch |err| {
-                                            log.warn("failed to send mouse button: {}", .{err});
-                                        };
-                                    }
-                                    return true;
-                                }
+                        const forward_press = forwardMouseToProgram(terminalHasMouseTracking(terminal), view.is_viewing_scrollback, shift_held);
+
+                        // Arm hold-to-drag when this window's only terminal fills
+                        // it (the window is the tile). A tracked press is withheld
+                        // until the hold resolves: forwarded late for a click or an
+                        // immediate drag, never for a drag of the tile.
+                        if (event.button.button == c.SDL_BUTTON_LEFT and event.button.clicks == 1 and
+                            self.dragAllowed(host))
+                        {
+                            self.reorder_phase = .pending;
+                            self.reorder_slot = focused_idx;
+                            self.reorder_press_x = event.button.x;
+                            self.reorder_press_y = event.button.y;
+                            self.reorder_press_ms = host.now_ms;
+                            self.deferred_select = null;
+                            if (forward_press) {
+                                self.deferred_press = .{ .button = event.button.button, .x = mouse_x, .y = mouse_y };
+                                return true;
                             }
+                        }
+
+                        if (forward_press) {
+                            if (self.forwardPressToProgram(host, focused, event.button.button, mouse_x, mouse_y)) return true;
                         }
 
                         if (event.button.button == c.SDL_BUTTON_LEFT) {
@@ -468,6 +553,19 @@ pub const SessionInteractionComponent = struct {
                     // swallow its release too so the program never sees a dangling
                     // right-button event.
                     if (event.button.button == c.SDL_BUTTON_RIGHT) return true;
+
+                    // Lone-terminal hold: an active drag ends here (swallowed, the
+                    // program never saw the press); a hold released early was a
+                    // click, so the withheld press goes out now and the release
+                    // follows through the normal path below.
+                    if (event.button.button == c.SDL_BUTTON_LEFT and self.reorder_phase != .idle) {
+                        if (self.reorder_phase == .active) {
+                            self.finishActiveDrag(host, @intFromFloat(event.button.x), @intFromFloat(event.button.y), actions);
+                            return true;
+                        }
+                        self.reorder_phase = .idle;
+                        self.flushDeferredPress(host);
+                    }
 
                     // A local Shift-selection was made without forwarding the press,
                     // so don't forward the release either — end the selection locally.
@@ -516,22 +614,7 @@ pub const SessionInteractionComponent = struct {
                         // app, which decides between another window and a
                         // brand-new one at the drop point.
                         .active => {
-                            const up_x: c_int = @intFromFloat(event.button.x);
-                            const up_y: c_int = @intFromFloat(event.button.y);
-                            if (!pointerInsideWindow(up_x, up_y, host.window_w, host.window_h)) {
-                                var gx: f32 = 0;
-                                var gy: f32 = 0;
-                                _ = c.SDL_GetGlobalMouseState(&gx, &gy);
-                                actions.append(.{ .DragSessionOut = .{
-                                    .idx = self.reorder_slot,
-                                    .origin = self.reorder_origin_slot,
-                                    .screen_x = @intFromFloat(gx),
-                                    .screen_y = @intFromFloat(gy),
-                                } }) catch |err| {
-                                    log.warn("failed to queue drag-out of slot {d}: {}", .{ self.reorder_slot, err });
-                                };
-                            }
-                            self.endReorder();
+                            self.finishActiveDrag(host, @intFromFloat(event.button.x), @intFromFloat(event.button.y), actions);
                             return true;
                         },
                         // Hold never satisfied: this was a plain click — fire
@@ -562,6 +645,32 @@ pub const SessionInteractionComponent = struct {
                 var desired_cursor: CursorKind = .arrow;
                 const dragging_scrollbar = self.handleTerminalScrollbarDrag(host, mouse_x, mouse_y);
                 const over_scrollbar = self.updateTerminalScrollbarHover(host, mouse_x, mouse_y) or dragging_scrollbar;
+
+                // Lone-terminal hold (Full view), ahead of the motion forward so
+                // a tracking program sees nothing until the hold resolves.
+                // Pending: travel past the slop demotes it to a click/drag (the
+                // withheld press goes out, then motion flows as usual); staying
+                // put promotes on the time bar. Active: the drag owns the pointer.
+                if (!dragging_scrollbar and host.view_mode == .Full and self.reorder_phase != .idle) {
+                    if (self.reorder_phase == .active) {
+                        self.updateCursor(.grab);
+                        return true;
+                    }
+                    const dx = event.motion.x - self.reorder_press_x;
+                    const dy = event.motion.y - self.reorder_press_y;
+                    switch (holdOutcome(host.now_ms - self.reorder_press_ms, reorderPressMoved(dx, dy), false)) {
+                        .forward_now => {
+                            self.reorder_phase = .idle;
+                            self.flushDeferredPress(host);
+                        },
+                        .promote => {
+                            self.maybePromoteReorder(host);
+                            return true;
+                        },
+                        // A withheld press means the program must not get motion yet.
+                        .wait => if (self.deferred_press != null) return true,
+                    }
+                }
 
                 if (!dragging_scrollbar and host.view_mode == .Full) {
                     const focused_idx = host.focused_session;
@@ -677,7 +786,7 @@ pub const SessionInteractionComponent = struct {
                 // Active: the drag owns the pointer — re-slot when the cursor
                 // enters the CENTER zone of another tile, and skip hover and
                 // selection handling entirely.
-                if (self.reorder_phase != .idle and !inGridView(host.view_mode)) {
+                if (self.reorder_phase != .idle and !self.dragAllowed(host)) {
                     // View changed mid-press (zoom animation etc.) — abandon.
                     // GridResizing still counts as grid: every committed
                     // re-slot flips the mode there for its slide animation,
@@ -881,7 +990,7 @@ pub const SessionInteractionComponent = struct {
         const self: *SessionInteractionComponent = @ptrCast(@alignCast(self_ptr));
         _ = assets;
         defer self.reorder_first_frame.markDrawn();
-        const slot: usize = if (self.reorder_phase == .active and inGridView(host.view_mode))
+        const slot: usize = if (self.reorder_phase == .active and self.dragAllowed(host))
             self.reorder_slot
         else
             self.drop_hint orelse return;
@@ -906,7 +1015,7 @@ pub const SessionInteractionComponent = struct {
 
         // A motionless hold gets no mouse events; the per-frame tick is what
         // promotes it to a reorder drag (wantsFrame keeps frames coming).
-        if (self.reorder_phase == .pending and inGridView(host.view_mode)) {
+        if (self.reorder_phase == .pending and self.dragAllowed(host)) {
             self.maybePromoteReorder(host);
         }
 
@@ -1915,6 +2024,22 @@ test "pointerInsideWindow: inside is a reorder, outside is a drag-out" {
     try std.testing.expect(!pointerInsideWindow(10, 600, 800, 600));
     try std.testing.expect(!pointerInsideWindow(-1, 10, 800, 600));
     try std.testing.expect(!pointerInsideWindow(10, -5, 800, 600));
+}
+
+test "dragAllowedFor: grid always, Full only for a lone terminal" {
+    try std.testing.expect(dragAllowedFor(.Grid, 3));
+    try std.testing.expect(dragAllowedFor(.GridResizing, 2));
+    try std.testing.expect(dragAllowedFor(.Full, 1));
+    try std.testing.expect(!dragAllowedFor(.Full, 2));
+    try std.testing.expect(!dragAllowedFor(.Expanding, 1));
+}
+
+test "holdOutcome: release or travel forwards, time promotes, otherwise wait" {
+    try std.testing.expectEqual(HoldOutcome.forward_now, holdOutcome(10, false, true));
+    try std.testing.expectEqual(HoldOutcome.forward_now, holdOutcome(10, true, false));
+    try std.testing.expectEqual(HoldOutcome.forward_now, holdOutcome(reorder_hold_ms + 50, true, false));
+    try std.testing.expectEqual(HoldOutcome.promote, holdOutcome(reorder_hold_ms, false, false));
+    try std.testing.expectEqual(HoldOutcome.wait, holdOutcome(reorder_hold_ms - 1, false, false));
 }
 
 /// True when the pointer has traveled past the reorder slop — the press is a
