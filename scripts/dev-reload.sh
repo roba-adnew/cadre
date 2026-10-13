@@ -149,6 +149,9 @@ nohup bash -c '
     mv "$staging/Cadre.app" "/Applications/Cadre.app"
     rmdir "$staging" 2>/dev/null || true
     open "/Applications/Cadre.app"
+    # `open` normally activates, but after a bundle swap the new window has come
+    # up behind the current app; activate explicitly once it is running.
+    sleep 2; osascript -e 'tell application "Cadre" to activate' 2>/dev/null || true
 ' _ "$staging" "$old_pid" >/dev/null 2>&1 &
 disown
 
