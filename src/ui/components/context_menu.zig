@@ -167,6 +167,7 @@ pub const ContextMenuComponent = struct {
     /// terminal actions apply to it rather than to the previously focused pane.
     fn selectPaneUnder(host: *const types.UiHost, x: c_int, y: c_int, actions: *types.UiActionQueue) void {
         if (host.view_mode != .Grid or host.cell_w <= 0 or host.cell_h <= 0) return;
+        if (x < 0 or y < 0) return;
         const col: usize = @intCast(@divFloor(x, host.cell_w));
         const row: usize = @intCast(@divFloor(y, host.cell_h));
         if (col >= host.grid_cols or row >= host.grid_rows) return;
