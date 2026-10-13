@@ -184,6 +184,11 @@ pub const FindBarComponent = struct {
         _ = now_ms;
     }
 
+    /// Close the bar when it is bound to `idx` (the pane is leaving this window).
+    pub fn closeIfBoundTo(self: *FindBarComponent, idx: usize) void {
+        if (self.open and self.session_idx == idx) self.close();
+    }
+
     fn close(self: *FindBarComponent) void {
         self.open = false;
         // Drop the highlight and return to the live prompt on the bound pane.

@@ -132,6 +132,11 @@ pub const ReaderOverlayComponent = struct {
         return .opened;
     }
 
+    /// Hide the overlay when it shows `idx` (the pane is leaving this window).
+    pub fn hideIfBoundTo(self: *ReaderOverlayComponent, idx: usize, now_ms: i64) void {
+        if (self.session_index == idx and self.overlay.visible) self.hide(now_ms);
+    }
+
     fn hide(self: *ReaderOverlayComponent, now_ms: i64) void {
         self.overlay.hide(now_ms);
         self.scrollbar_state.hideNow();

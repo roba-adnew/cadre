@@ -1182,6 +1182,9 @@ const App = struct {
     pending_new_window: ?NewWindowRequest,
     /// Window to tear down at the end of this frame.
     closing_window: ?*Window,
+    /// Session move between two existing windows, applied after every
+    /// window's action drain so both grids change in one place.
+    pending_move: ?MoveRequest,
 
     fn focusedWindow(self: *App) *Window {
         return self.last_focused orelse self.windows.items[0];
@@ -1377,13 +1380,135 @@ const App = struct {
             log.warn("failed to copy cwd for new window: {}", .{err});
             break :blk null;
         } else null;
-        self.pending_new_window = .{
+        self.pending_new_window = cascadedRequest(from, cwd, null);
+    }
+
+    /// Cmd+Shift+M: detach `idx` of `from` into a new window opened next frame
+    /// step (after the event drain). A lone visible terminal stays put.
+    fn requestMoveToNewWindow(self: *App, from: *Window, idx: usize) void {
+        const now = std.time.milliTimestamp();
+        if (self.pending_new_window != null or self.closing_window == from) return;
+        if (idx >= from.sessions.len or !from.sessions[idx].isVisible()) return;
+        if (countVisibleSessions(from.sessions) <= 1) {
+            from.ui.showToast("Already its own window", now);
+            return;
+        }
+        if (self.windows.items.len >= max_windows) {
+            from.ui.showToast("Window limit reached", now);
+            return;
+        }
+        self.pending_new_window = cascadedRequest(from, null, .{ .window = from, .idx = idx });
+    }
+
+    fn cascadedRequest(from: *Window, cwd: ?[]u8, move_from: ?MoveSource) NewWindowRequest {
+        return .{
             .width = from.window_width_points,
             .height = from.window_height_points,
             .x = if (from.window_x >= 0) from.window_x + new_window_offset_points else -1,
             .y = if (from.window_y >= 0) from.window_y + new_window_offset_points else -1,
             .cwd = cwd,
+            .move_from = move_from,
         };
+    }
+
+    /// Move the visible session at `src_idx` from `src` into `dst`. The
+    /// `*SessionState` pointer changes hands (PTY, tmux name, persist_index and
+    /// any armed exit watcher travel with it); the renderer-bound texture and
+    /// scrollbar caches are dropped on the source side and rebuilt lazily by
+    /// the target; both grids reflow. Fails before touching anything when the
+    /// target has no free slot.
+    fn moveSession(self: *App, src: *Window, src_idx: usize, dst: *Window, now: i64) !void {
+        const allocator = self.allocator;
+        if (src == dst) return error.SameWindow;
+        if (src_idx >= src.sessions.len or !src.sessions[src_idx].isVisible()) return error.NotVisible;
+        const plan = planExternalSpawnSlot(dst.sessions, dst.grid.cols, dst.grid.rows, dst.anim_state.focused_session) orelse return error.TargetFull;
+        const moving = src.sessions[src_idx];
+
+        // --- source: detach the pane from everything that indexes it ---
+        if (src.anim_state.focused_session == src_idx) {
+            input_text.clearImeComposition(moving, &src.ime_composition) catch |err| {
+                log.warn("failed to clear IME composition before move: {}", .{err});
+            };
+            if (src.anim_state.mode == .Full) {
+                if (self.animations_enabled) {
+                    grid_nav.startCollapseToGrid(&src.anim_state, now, src.cell_width_pixels, src.cell_height_pixels, src.render_width, src.render_height, src.grid.cols);
+                } else {
+                    src.anim_state.mode = .Grid;
+                }
+            }
+        }
+        if (src.pending_comment_send) |pending| {
+            if (pending.session == src_idx) {
+                allocator.free(pending.text);
+                src.pending_comment_send = null;
+            }
+        }
+        src.find_bar_comp_ptr.closeIfBoundTo(src_idx);
+        src.reader_overlay_component.hideIfBoundTo(src_idx, now);
+        src.foreground_cache = .{};
+
+        var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
+        defer if (old_positions) |*snapshots| snapshots.deinit(allocator);
+        if (self.animations_enabled and src.anim_state.mode == .Grid) {
+            old_positions = collectSessionIndexSnapshots(src.sessions, allocator) catch |err| blk: {
+                log.warn("failed to snapshot session positions for move: {}", .{err});
+                break :blk null;
+            };
+        }
+
+        // Renderer-bound state must die while the source renderer is alive.
+        carryViewState(&src.session_interaction_component.viewSlice()[src_idx], &dst.session_interaction_component.viewSlice()[plan.slot_index]);
+        dropCacheEntry(&src.render_cache, src_idx);
+        dropCacheEntry(&dst.render_cache, plan.slot_index);
+
+        transferSlot(src.sessions, src_idx, dst.sessions, plan.slot_index);
+        src.reflowAfterRemoval(if (old_positions) |*snapshots| snapshots.items else null, now);
+
+        // --- target: same path as revealing a hidden terminal ---
+        const dst_sessions = dst.sessions;
+        compactSessions(dst_sessions, dst.session_interaction_component.viewSlice(), &dst.render_cache, &dst.anim_state);
+        const visible = countVisibleSessions(dst_sessions);
+        const new_idx = findSessionIndexById(dst_sessions, moving.id) orelse 0;
+        dst.anim_state.previous_session = dst.anim_state.focused_session;
+        dst.anim_state.focused_session = new_idx;
+        dst.session_interaction_component.clearSelection(new_idx);
+        if (visible <= 1) {
+            dst.grid.cols = 1;
+            dst.grid.rows = 1;
+            dst.anim_state.mode = .Full;
+        } else {
+            const dims = GridLayout.calculateDimensions(visible);
+            dst.grid.cols = dims.cols;
+            dst.grid.rows = dims.rows;
+            dst.anim_state.mode = .Grid;
+        }
+        dst.cell_width_pixels = @divFloor(dst.render_width, @as(c_int, @intCast(dst.grid.cols)));
+        dst.cell_height_pixels = @divFloor(dst.render_height, @as(c_int, @intCast(dst.grid.rows)));
+        dst.applyTerminalLayout();
+        self.persistence_dirty = true;
+        log.info("moved session persist_index={d} from window {d} slot {d} to window {d} slot {d}", .{ moving.persist_index, src.window_id, src_idx, dst.window_id, new_idx });
+    }
+
+    /// Apply a queued window-to-window move once every window's action drain
+    /// has run this frame.
+    fn applyPendingMove(self: *App, now: i64) void {
+        const req = self.pending_move orelse return;
+        self.pending_move = null;
+        if (self.closing_window == req.src or self.closing_window == req.dst) return;
+        if (self.windowIndexOrNull(req.src) == null or self.windowIndexOrNull(req.dst) == null) return;
+        self.moveSession(req.src, req.idx, req.dst, now) catch |err| {
+            log.warn("move to window failed: {}", .{err});
+            req.src.ui.showToast("Could not move terminal", now);
+            return;
+        };
+        _ = c.SDL_RaiseWindow(req.dst.pw.window);
+    }
+
+    fn windowIndexOrNull(self: *const App, window: *const Window) ?usize {
+        for (self.windows.items, 0..) |w, i| {
+            if (w == window) return i;
+        }
+        return null;
     }
 
     fn createWindowFromRequest(self: *App) void {
@@ -1391,10 +1516,12 @@ const App = struct {
         const req = self.pending_new_window orelse return;
         self.pending_new_window = null;
         defer if (req.cwd) |cwd| allocator.free(cwd);
+        const now = std.time.milliTimestamp();
         const geometry = config_mod.WindowConfig{ .width = req.width, .height = req.height, .x = req.x, .y = req.y };
-        const window = Window.create(self, &[_]config_mod.Persistence.TerminalEntry{}, geometry, 0, false, req.cwd) catch |err| {
+        // A move brings its own terminal, so the window opens with an empty slot 0.
+        const window = Window.create(self, &[_]config_mod.Persistence.TerminalEntry{}, geometry, 0, false, req.cwd, req.move_from == null) catch |err| {
             log.err("failed to open a new window: {}", .{err});
-            self.focusedWindow().ui.showToast("Could not open window", std.time.milliTimestamp());
+            self.focusedWindow().ui.showToast("Could not open window", now);
             return;
         };
         self.windows.append(allocator, window) catch |err| {
@@ -1406,6 +1533,18 @@ const App = struct {
             log.warn("failed to persist new window entry: {}", .{err});
         };
         self.persistence_dirty = true;
+        if (req.move_from) |mv| {
+            const src_alive = self.windowIndexOrNull(mv.window) != null and self.closing_window != mv.window;
+            const moved = if (src_alive) self.moveSession(mv.window, mv.idx, window, now) else error.SourceGone;
+            moved catch |err| {
+                // Never leave a window without a terminal: fall back to a fresh shell.
+                log.warn("move into new window failed: {}; opening a fresh terminal instead", .{err});
+                window.sessions[0].ensureSpawnedWithLoop(&self.loop) catch |spawn_err| {
+                    log.err("failed to spawn fallback terminal in new window: {}", .{spawn_err});
+                };
+                window.applyTerminalLayout();
+            };
+        }
         _ = c.SDL_RaiseWindow(window.pw.window);
         log.info("opened window {d} (total {d})", .{ window.window_id, self.windows.items.len });
     }
@@ -1493,7 +1632,51 @@ const NewWindowRequest = struct {
     x: c_int,
     y: c_int,
     cwd: ?[]u8,
+    /// Set when the window is opened to receive a detached terminal.
+    move_from: ?MoveSource = null,
 };
+
+const MoveSource = struct { window: *Window, idx: usize };
+const MoveRequest = struct { src: *Window, idx: usize, dst: *Window };
+
+/// Hand the visible session at `src_idx` to `dst_idx` of another window by
+/// swapping the slot pointers: the target's (never-spawned) placeholder takes
+/// the vacated source slot, so both arrays stay fully populated. The moved
+/// session arrives un-hidden with a fresh order_seq (lands at the end of the
+/// target grid, like a reveal) and both sessions are marked dirty.
+fn transferSlot(src: []*SessionState, src_idx: usize, dst: []*SessionState, dst_idx: usize) void {
+    std.mem.swap(*SessionState, &src[src_idx], &dst[dst_idx]);
+    src[src_idx].slot_index = src_idx;
+    src[src_idx].markDirty();
+    const moved = dst[dst_idx];
+    moved.slot_index = dst_idx;
+    moved.hidden = false;
+    moved.order_seq = session_state.mintOrderSeqBlock(1);
+    moved.markDirty();
+}
+
+/// Carry a pane's status badges across windows and reset everything that is
+/// bound to the old window: scroll, selection, hover pins, waves and the
+/// scrollbar textures (freed here, while the source renderer is alive).
+fn carryViewState(src: *SessionViewState, dst: *SessionViewState) void {
+    const status = src.status;
+    const claude_seen = src.claude_seen;
+    const attention = src.attention;
+    const hosting = src.hosting;
+    src.reset();
+    dst.reset();
+    dst.status = status;
+    dst.claude_seen = claude_seen;
+    dst.attention = attention;
+    dst.hosting = hosting;
+}
+
+/// Free a slot's cached texture (renderer-bound) and forget its epochs.
+fn dropCacheEntry(cache: *renderer_mod.RenderCache, idx: usize) void {
+    if (idx >= cache.entries.len) return;
+    if (cache.entries[idx].texture) |tex| c.SDL_DestroyTexture(tex);
+    cache.entries[idx] = .{};
+}
 
 /// The window an SDL event names, or null for windowless events (QUIT,
 /// keymap/clipboard changes), which go to the focused window.
@@ -1576,6 +1759,7 @@ const Window = struct {
     /// Per-frame: a session texture or the layout changed this frame.
     any_session_dirty: bool,
     session_interaction_component: *ui_mod.SessionInteractionComponent,
+    find_bar_comp_ptr: *ui_mod.find_bar.FindBarComponent,
     worktree_comp_ptr: *ui_mod.worktree_overlay.WorktreeOverlayComponent,
     recent_folders_comp_ptr: *ui_mod.recent_folders_overlay.RecentFoldersOverlayComponent,
     hidden_switcher_comp_ptr: *ui_mod.hidden_switcher.HiddenSwitcherComponent,
@@ -1596,6 +1780,7 @@ const Window = struct {
         focused_session: usize,
         zoomed: bool,
         initial_cwd: ?[]const u8,
+        spawn_initial: bool,
     ) !*Window {
         const allocator = app.allocator;
         const persistence = &app.persistence;
@@ -1774,8 +1959,9 @@ const Window = struct {
         }
 
         // Always spawn at least the first terminal; a window opened from a
-        // terminal starts in that terminal's directory.
-        if (initial_cwd) |cwd| {
+        // terminal starts in that terminal's directory. A window opened to
+        // receive a moved terminal keeps slot 0 empty for it.
+        if (!spawn_initial) {} else if (initial_cwd) |cwd| {
             const cwd_buf = try allocZ(allocator, cwd);
             defer allocator.free(cwd_buf);
             const cwd_z: [:0]const u8 = cwd_buf[0..cwd.len :0];
@@ -1833,12 +2019,12 @@ const Window = struct {
         // Cmd+F find-in-terminal. Shares the interaction component's per-session
         // view states so its highlight/scroll reuses the same selection + scrollback
         // machinery as mouse selection.
-        const find_bar_component = try ui_mod.find_bar.FindBarComponent.init(
+        self.find_bar_comp_ptr = try ui_mod.find_bar.FindBarComponent.init(
             allocator,
             sessions,
             self.session_interaction_component.viewSlice(),
         );
-        try self.ui.register(find_bar_component.asComponent());
+        try self.ui.register(self.find_bar_comp_ptr.asComponent());
 
         // Restored terminals land sequentially (visible first, hidden right after).
         // Compact once so hidden sessions get parked off-grid, otherwise the first ⌘N
@@ -2100,6 +2286,16 @@ const Window = struct {
             self.session_interaction_component.resetView(idx);
         }
         sessions[idx].markDirty();
+        self.reflowAfterRemoval(if (old_positions) |*snapshots| snapshots.items else null, now);
+    }
+
+    /// Grid half of a removal (close, hide or move-out): compact the slots,
+    /// shrink the grid, animate the reflow from `old_positions` when given,
+    /// re-focus a visible pane, and respawn a fresh shell when nothing is left.
+    fn reflowAfterRemoval(self: *Window, old_positions: ?[]const SessionIndexSnapshot, now: i64) void {
+        const app = self.app;
+        const allocator = app.allocator;
+        const sessions = self.sessions;
         compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
 
         // Handle grid contraction (hidden sessions don't count toward grid size).
@@ -2143,7 +2339,7 @@ const Window = struct {
                 const grid_will_resize = new_dims.cols != self.grid.cols or new_dims.rows != self.grid.rows;
                 if (can_animate_reflow) {
                     if (old_positions) |snapshots| {
-                        var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                        var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots, allocator) catch |err| blk: {
                             std.debug.print("Failed to collect session moves: {}\n", .{err});
                             break :blk null;
                         };
@@ -2190,7 +2386,7 @@ const Window = struct {
                 const can_animate_reflow = app.animations_enabled and self.anim_state.mode == .Grid;
                 if (can_animate_reflow) {
                     if (old_positions) |snapshots| {
-                        var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots.items, allocator) catch |err| blk: {
+                        var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snapshots, allocator) catch |err| blk: {
                             std.debug.print("Failed to collect session moves: {}\n", .{err});
                             break :blk null;
                         };
@@ -2555,6 +2751,12 @@ const Window = struct {
                 if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_W) {
                     if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧W", now);
                     self.requestClose();
+                    return;
+                }
+
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_M) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧M", now);
+                    app.requestMoveToNewWindow(self, self.anim_state.focused_session);
                     return;
                 }
 
@@ -3482,6 +3684,15 @@ const Window = struct {
             .CloseWindow => {
                 if (!app.quit_teardown.active) app.closing_window = self;
             },
+            .MoveSessionToNewWindow => |idx| {
+                app.requestMoveToNewWindow(self, idx);
+            },
+            .MoveSessionToWindow => |mv| {
+                if (mv.window_index >= app.windows.items.len) continue;
+                const dst = app.windows.items[mv.window_index];
+                if (dst == self or app.pending_move != null) continue;
+                app.pending_move = .{ .src = self, .idx = mv.idx, .dst = dst };
+            },
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
                     defer allocator.free(config_path);
@@ -4154,6 +4365,7 @@ pub fn run() !void {
     app.last_focused = null;
     app.pending_new_window = null;
     app.closing_window = null;
+    app.pending_move = null;
 
     // Pool sessions outlive every window (UI components reference them), so
     // this defer is registered first and runs after the windows are destroyed.
@@ -4188,7 +4400,7 @@ pub fn run() !void {
                 try group.append(allocator, entry);
             }
             const entry = app.persistence.windows.items[k];
-            const created = Window.create(&app, group.items, entry.window, entry.focused_session, entry.zoomed, null) catch |err| {
+            const created = Window.create(&app, group.items, entry.window, entry.focused_session, entry.zoomed, null, true) catch |err| {
                 if (k == 0) return err;
                 log.err("failed to restore window {d}: {}; its terminals stay detached in tmux", .{ k, err });
                 _ = app.persistence.windows.orderedRemove(k);
@@ -4329,6 +4541,7 @@ pub fn run() !void {
         for (app.windows.items) |window| {
             try window.update(now);
         }
+        app.applyPendingMove(now);
 
         var is_idle = true;
         for (app.windows.items) |window| {
@@ -4622,6 +4835,57 @@ fn testSession(s: *SessionState, id: usize, order_seq: u64, spawned: bool, hidde
     s.id = id;
     s.order_seq = order_seq;
     s.persist_index = id;
+}
+
+test "transferSlot swaps the slot pointers and re-homes the moved session" {
+    var a0: SessionState = undefined;
+    var a1: SessionState = undefined;
+    var b0: SessionState = undefined;
+    testSession(&a0, 10, 1, true, false);
+    testSession(&a1, 11, 2, true, true); // hidden: moving un-hides it
+    testSession(&b0, 20, 0, false, false); // target placeholder, never spawned
+    a0.slot_index = 0;
+    a1.slot_index = 1;
+    b0.slot_index = 0;
+    var src = [_]*SessionState{ &a0, &a1 };
+    var dst = [_]*SessionState{&b0};
+    const seq_before = session_state.mintOrderSeqBlock(1);
+
+    transferSlot(&src, 1, &dst, 0);
+
+    try std.testing.expectEqual(@as(usize, 11), dst[0].id);
+    try std.testing.expectEqual(@as(usize, 20), src[1].id);
+    try std.testing.expectEqual(@as(usize, 0), dst[0].slot_index);
+    try std.testing.expectEqual(@as(usize, 1), src[1].slot_index);
+    try std.testing.expect(!dst[0].hidden);
+    try std.testing.expect(dst[0].order_seq > seq_before);
+    // persist_index travels with the pointer: the tmux name is untouched.
+    try std.testing.expectEqual(@as(usize, 11), dst[0].persist_index);
+    try std.testing.expectEqual(@as(usize, 10), src[0].id);
+}
+
+test "carryViewState keeps badges and resets window-bound view state" {
+    var src = SessionViewState{};
+    var dst = SessionViewState{};
+    src.status = .done;
+    src.claude_seen = true;
+    src.attention = true;
+    src.hosting = true;
+    src.selection_dragging = true;
+    src.is_viewing_scrollback = true;
+    src.wave_start_time = 42;
+    dst.status = .running;
+    dst.scroll_velocity = 3.0;
+
+    carryViewState(&src, &dst);
+
+    try std.testing.expectEqual(app_state.SessionStatus.done, dst.status);
+    try std.testing.expect(dst.claude_seen and dst.attention and dst.hosting);
+    try std.testing.expect(!dst.selection_dragging and !dst.is_viewing_scrollback);
+    try std.testing.expectEqual(@as(i64, 0), dst.wave_start_time);
+    try std.testing.expectEqual(@as(f32, 0.0), dst.scroll_velocity);
+    try std.testing.expectEqual(app_state.SessionStatus.idle, src.status);
+    try std.testing.expect(!src.attention and !src.hosting);
 }
 
 test "springboardOrder shifts only the tiles between from and to" {
