@@ -251,20 +251,15 @@ pub const ContextMenuComponent = struct {
     const Palette = struct { panel: c.SDL_Color, border: c.SDL_Color, hover: c.SDL_Color, text: c.SDL_Color, dim: c.SDL_Color };
 
     fn palette(theme: *const colors.Theme) Palette {
-        const bg = theme.background;
-        const light = @as(u32, bg.r) + @as(u32, bg.g) + @as(u32, bg.b) > 382;
-        return if (light) .{
-            .panel = .{ .r = 246, .g = 246, .b = 244, .a = 245 },
-            .border = .{ .r = 170, .g = 170, .b = 168, .a = 255 },
-            .hover = .{ .r = 214, .g = 214, .b = 210, .a = 255 },
-            .text = .{ .r = 28, .g = 28, .b = 26, .a = 255 },
-            .dim = .{ .r = 115, .g = 115, .b = 112, .a = 255 },
-        } else .{
-            .panel = .{ .r = 46, .g = 46, .b = 44, .a = 245 },
-            .border = .{ .r = 92, .g = 92, .b = 88, .a = 255 },
-            .hover = .{ .r = 78, .g = 78, .b = 74, .a = 255 },
-            .text = .{ .r = 232, .g = 232, .b = 228, .a = 255 },
-            .dim = .{ .r = 150, .g = 150, .b = 146, .a = 255 },
+        // Same surface system as every other chrome panel (see Theme.surface).
+        var panel_fill = theme.surface(2);
+        panel_fill.a = 245;
+        return .{
+            .panel = panel_fill,
+            .border = theme.chromeBorder(),
+            .hover = theme.surface(3),
+            .text = theme.chromeText(),
+            .dim = theme.chromeTextDim(),
         };
     }
 

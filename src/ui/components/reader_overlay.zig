@@ -1100,7 +1100,7 @@ pub const ReaderOverlayComponent = struct {
         }
 
         if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
-            scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
+            scrollbar.render(renderer, layout, host.theme, &self.scrollbar_state);
             self.scrollbar_state.markDrawn();
         } else {
             self.scrollbar_state.hideNow();
@@ -1596,7 +1596,8 @@ pub const ReaderOverlayComponent = struct {
         _ = c.SDL_SetRenderDrawColor(renderer, host.theme.accent.r, host.theme.accent.g, host.theme.accent.b, 210);
         primitives.fillRoundedRect(renderer, rect, btn_radius);
         if (self.jump_button_hovered) {
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = host.theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, rect, btn_radius);
         }
 

@@ -661,8 +661,8 @@ pub const RecentFoldersOverlayComponent = struct {
             return null;
         };
 
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
-        const entry_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
+        const key_color = theme.accent;
+        const entry_color = theme.chromeTextDim();
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
             c.SDL_DestroyTexture(title_tex.tex);

@@ -58,7 +58,8 @@ pub fn renderButton(
 
     if (hovered) {
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+        const hover_tint = theme.hoverOverlay();
+        _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
         primitives.fillRoundedRect(renderer, rect_int, fill_radius);
     }
 

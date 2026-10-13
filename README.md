@@ -56,6 +56,7 @@ Cadre solves this with a grid view that keeps all your agents visible, with **st
 - Kitty keyboard protocol for enhanced key handling
 - Persistent window state and font size across sessions; every open window and which terminals it held is restored on relaunch
 - The native macOS title bar is tinted to the theme background, with the app name at its far right (title text and traffic lights follow the theme's light/dark luminance)
+- UI chrome (menus, overlays, pills, dialogs, scrollbar) is derived from the theme background in both modes: lighter surfaces on dark themes, darker on light ones, so custom themes stay cohesive
 
 ## Installation
 

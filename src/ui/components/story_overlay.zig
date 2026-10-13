@@ -602,7 +602,7 @@ pub const StoryOverlayComponent = struct {
             .h = overlay_rect.h - title_h,
         };
         if (scrollbar.computeLayout(content_rect, host.ui_scale, scroll_metrics)) |layout| {
-            scrollbar.render(renderer, layout, host.theme.accent, &self.scrollbar_state);
+            scrollbar.render(renderer, layout, host.theme, &self.scrollbar_state);
             self.scrollbar_state.markDrawn();
         } else {
             self.scrollbar_state.hideNow();

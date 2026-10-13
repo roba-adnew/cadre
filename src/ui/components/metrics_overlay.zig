@@ -130,8 +130,8 @@ pub const MetricsOverlayComponent = struct {
         };
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const sel = host.theme.selection;
-        _ = c.SDL_SetRenderDrawColor(renderer, sel.r, sel.g, sel.b, bg_alpha);
+        const panel_fill = host.theme.surface(2);
+        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, bg_alpha);
         _ = c.SDL_RenderFillRect(renderer, &bg_rect);
 
         const acc = host.theme.accent;

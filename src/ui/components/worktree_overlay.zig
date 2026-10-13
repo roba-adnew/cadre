@@ -699,8 +699,8 @@ pub const WorktreeOverlayComponent = struct {
             return null;
         };
 
-        const key_color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = 255 };
-        const entry_color = c.SDL_Color{ .r = 171, .g = 178, .b = 191, .a = 255 };
+        const key_color = theme.accent;
+        const entry_color = theme.chromeTextDim();
 
         const entries = self.allocator.alloc(EntryTex, entry_count) catch {
             c.SDL_DestroyTexture(title_tex.tex);
@@ -1239,7 +1239,8 @@ pub const WorktreeOverlayComponent = struct {
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        const scrim_tint = theme.scrim(170);
+        _ = c.SDL_SetRenderDrawColor(renderer, scrim_tint.r, scrim_tint.g, scrim_tint.b, scrim_tint.a);
         const backdrop = c.SDL_FRect{
             .x = 0,
             .y = 0,
@@ -1368,7 +1369,8 @@ pub const WorktreeOverlayComponent = struct {
         const layout = self.createModalLayout(host);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        const scrim_tint = theme.scrim(170);
+        _ = c.SDL_SetRenderDrawColor(renderer, scrim_tint.r, scrim_tint.g, scrim_tint.b, scrim_tint.a);
         const backdrop = c.SDL_FRect{
             .x = 0,
             .y = 0,

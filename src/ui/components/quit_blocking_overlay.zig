@@ -94,7 +94,8 @@ pub const QuitBlockingOverlayComponent = struct {
             .h = @floatFromInt(host.window_h),
         };
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 85, 85, 85, base_alpha);
+        const veil = host.theme.surface(3);
+        _ = c.SDL_SetRenderDrawColor(renderer, veil.r, veil.g, veil.b, base_alpha);
         _ = c.SDL_RenderFillRect(renderer, &window_rect);
 
         const shimmer_w: c_int = @max(@divFloor(host.window_w, shimmer_width_divisor), shimmer_min_width);
@@ -105,17 +106,18 @@ pub const QuitBlockingOverlayComponent = struct {
         const center_x = -margin + progress * (@as(f32, @floatFromInt(host.window_w)) + margin * 2.0);
         const center_y = -margin + progress * (@as(f32, @floatFromInt(host.window_h)) + margin * 2.0);
 
+        const shimmer = host.theme.chromeTextDim();
         const window_h: usize = @intCast(host.window_h);
         for (0..window_h) |row| {
             const y: c_int = @intCast(row);
             const y_f = @as(f32, @floatFromInt(y));
             const center = center_x + shimmer_slope * (y_f - center_y);
-            drawBandRow(renderer, y, host.window_w, center, half_core_w, half_total_w);
+            drawBandRow(renderer, shimmer, y, host.window_w, center, half_core_w, half_total_w);
         }
     }
 
-    fn drawBandRow(renderer: *c.SDL_Renderer, y: c_int, window_w: c_int, center: f32, half_core_w: f32, half_total_w: f32) void {
-        drawSpan(renderer, y, window_w, center - half_core_w, center + half_core_w, shimmer_alpha);
+    fn drawBandRow(renderer: *c.SDL_Renderer, shimmer: c.SDL_Color, y: c_int, window_w: c_int, center: f32, half_core_w: f32, half_total_w: f32) void {
+        drawSpan(renderer, shimmer, y, window_w, center - half_core_w, center + half_core_w, shimmer_alpha);
 
         const fade_width = half_total_w - half_core_w;
         if (fade_width <= 0) return;
@@ -130,12 +132,12 @@ pub const QuitBlockingOverlayComponent = struct {
             const alpha: u8 = @intFromFloat(@max(0.0, @min(alpha_f, 255.0)));
             if (alpha == 0) continue;
 
-            drawSpan(renderer, y, window_w, center - outer, center - inner, alpha);
-            drawSpan(renderer, y, window_w, center + inner, center + outer, alpha);
+            drawSpan(renderer, shimmer, y, window_w, center - outer, center - inner, alpha);
+            drawSpan(renderer, shimmer, y, window_w, center + inner, center + outer, alpha);
         }
     }
 
-    fn drawSpan(renderer: *c.SDL_Renderer, y: c_int, window_w: c_int, left_f: f32, right_f: f32, alpha: u8) void {
+    fn drawSpan(renderer: *c.SDL_Renderer, shimmer: c.SDL_Color, y: c_int, window_w: c_int, left_f: f32, right_f: f32, alpha: u8) void {
         if (alpha == 0 or window_w <= 0) return;
 
         var left: c_int = @intFromFloat(@floor(left_f));
@@ -147,7 +149,7 @@ pub const QuitBlockingOverlayComponent = struct {
         const span_w = right - left;
         if (span_w <= 0) return;
 
-        _ = c.SDL_SetRenderDrawColor(renderer, 170, 170, 170, alpha);
+        _ = c.SDL_SetRenderDrawColor(renderer, shimmer.r, shimmer.g, shimmer.b, alpha);
         const rect = c.SDL_FRect{
             .x = @floatFromInt(left),
             .y = @floatFromInt(y),

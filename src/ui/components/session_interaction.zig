@@ -850,15 +850,10 @@ pub const SessionInteractionComponent = struct {
         if (self.reorder_phase != .active or !inGridView(host.view_mode)) return;
         const rect = sessionRectForIndex(host, self.reorder_slot) orelse return;
         const thickness = dpi.scale(renderer_mod.grid_border_thickness + 2, host.ui_scale);
-        // Neutral gray with contrast against the theme: light gray on dark
-        // backgrounds, dark gray on light ones (Theme has no mode field, so
-        // background luminance is the signal).
-        const bg = host.theme.background;
-        const light_bg = @as(u32, bg.r) + @as(u32, bg.g) + @as(u32, bg.b) > 382;
-        const lift_gray: c.SDL_Color = if (light_bg)
-            .{ .r = 90, .g = 90, .b = 90, .a = 220 }
-        else
-            .{ .r = 190, .g = 190, .b = 190, .a = 220 };
+        // Theme text color at reduced alpha: reads as a lifted outline on both
+        // light and dark themes.
+        const lift_fg = host.theme.chromeText();
+        const lift_gray: c.SDL_Color = .{ .r = lift_fg.r, .g = lift_fg.g, .b = lift_fg.b, .a = 220 };
         primitives.drawThickBorder(renderer, rect, thickness, dpi.scale(6, host.ui_scale), lift_gray);
     }
 

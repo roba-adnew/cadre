@@ -108,7 +108,8 @@ pub const HotkeyIndicatorComponent = struct {
             const layer_radius = backdrop_radius * (1.0 - layer_progress);
             const layer_alpha: f32 = (180.0 / 255.0) * layer_progress * alpha_f;
 
-            const base_color = c.SDL_FColor{ .r = 27.0 / 255.0, .g = 34.0 / 255.0, .b = 48.0 / 255.0, .a = layer_alpha };
+            const pill = host.theme.surface(2);
+            const base_color = c.SDL_FColor{ .r = @as(f32, @floatFromInt(pill.r)) / 255.0, .g = @as(f32, @floatFromInt(pill.g)) / 255.0, .b = @as(f32, @floatFromInt(pill.b)) / 255.0, .a = layer_alpha };
 
             var seg: usize = 0;
             while (seg < backdrop_segments) : (seg += 1) {
@@ -132,7 +133,8 @@ pub const HotkeyIndicatorComponent = struct {
 
         // Draw full blue ring (not segmented)
         const arc_segments: usize = 64;
-        const color = c.SDL_Color{ .r = 97, .g = 175, .b = 239, .a = alpha };
+        const ring = host.theme.accent;
+        const color = c.SDL_Color{ .r = ring.r, .g = ring.g, .b = ring.b, .a = alpha };
 
         const fcolor = c.SDL_FColor{
             .r = @as(f32, @floatFromInt(color.r)) / 255.0,
@@ -170,7 +172,8 @@ pub const HotkeyIndicatorComponent = struct {
         }
 
         // Draw label text
-        const text_color = c.SDL_Color{ .r = 205, .g = 214, .b = 224, .a = alpha };
+        const label_fg = host.theme.chromeText();
+        const text_color = c.SDL_Color{ .r = label_fg.r, .g = label_fg.g, .b = label_fg.b, .a = alpha };
         const label_slice = self.label[0..self.label_len];
 
         // Count display width (codepoints, handles multi-byte UTF-8)

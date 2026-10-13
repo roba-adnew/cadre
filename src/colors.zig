@@ -41,7 +41,76 @@ pub const Theme = struct {
     pub fn default() Theme {
         return fromConfig(.{});
     }
+
+    /// Light theme when the background is bright (same rule the lift cue used).
+    pub fn isLight(self: *const Theme) bool {
+        const bg = self.background;
+        return @as(u32, bg.r) + @as(u32, bg.g) + @as(u32, bg.b) > 382;
+    }
+
+    /// Chrome surface derived from the background: shifted toward white on a
+    /// dark theme and toward black on a light one. Level 0 is the background
+    /// itself; 1-3 step away from it for panels, hover rows and borders.
+    pub fn surface(self: *const Theme, level: u2) c.SDL_Color {
+        const fraction: f32 = switch (level) {
+            0 => 0.0,
+            1 => 0.06,
+            2 => 0.12,
+            3 => 0.20,
+        };
+        return shadeToward(self.background, self.surfaceTarget(), fraction);
+    }
+
+    pub fn chromeBorder(self: *const Theme) c.SDL_Color {
+        return self.surface(3);
+    }
+
+    pub fn chromeText(self: *const Theme) c.SDL_Color {
+        return .{ .r = self.foreground.r, .g = self.foreground.g, .b = self.foreground.b, .a = 255 };
+    }
+
+    /// Secondary text: foreground pulled a bit more than halfway to the background.
+    pub fn chromeTextDim(self: *const Theme) c.SDL_Color {
+        return shadeToward(self.foreground, self.background, 0.55);
+    }
+
+    /// Translucent tint for hovered rows/buttons: white on dark, black on light.
+    pub fn hoverOverlay(self: *const Theme) c.SDL_Color {
+        const t = self.surfaceTarget();
+        return .{ .r = t.r, .g = t.g, .b = t.b, .a = 25 };
+    }
+
+    /// Dimming layer behind modals. Black in both modes (dimming is what a
+    /// scrim means), lighter on light themes where full strength is harsh.
+    pub fn scrim(self: *const Theme, alpha: u8) c.SDL_Color {
+        const a: u8 = if (self.isLight()) @intCast(@as(u16, alpha) * 3 / 5) else alpha;
+        return .{ .r = 0, .g = 0, .b = 0, .a = a };
+    }
+
+    fn surfaceTarget(self: *const Theme) c.SDL_Color {
+        return if (self.isLight())
+            .{ .r = 0, .g = 0, .b = 0, .a = 255 }
+        else
+            .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    }
 };
+
+/// Blend `base` toward `target` by `fraction` (0 = base, 1 = target); alpha 255.
+pub fn shadeToward(base: c.SDL_Color, target: c.SDL_Color, fraction: f32) c.SDL_Color {
+    const f = std.math.clamp(fraction, 0.0, 1.0);
+    return .{
+        .r = blendChannel(base.r, target.r, f),
+        .g = blendChannel(base.g, target.g, f),
+        .b = blendChannel(base.b, target.b, f),
+        .a = 255,
+    };
+}
+
+fn blendChannel(from: u8, to: u8, f: f32) u8 {
+    const a: f32 = @floatFromInt(from);
+    const b: f32 = @floatFromInt(to);
+    return @intFromFloat(std.math.clamp(@round(a + (b - a) * f), 0.0, 255.0));
+}
 
 /// Standard 16 ANSI colors (8 normal + 8 bright) using One Dark theme.
 /// This is kept for backwards compatibility with code that uses the static array.
@@ -189,4 +258,38 @@ test "get256ColorWithTheme" {
     try std.testing.expectEqual(@as(u8, 0), color16.r);
     try std.testing.expectEqual(@as(u8, 0), color16.g);
     try std.testing.expectEqual(@as(u8, 0), color16.b);
+}
+
+test "Theme.surface steps away from the background in the right direction" {
+    var dark = Theme.default();
+    dark.background = .{ .r = 38, .g = 38, .b = 36, .a = 255 };
+    try std.testing.expect(!dark.isLight());
+    try std.testing.expect(colorsEqual(dark.surface(0), .{ .r = 38, .g = 38, .b = 36, .a = 255 }));
+    try std.testing.expect(dark.surface(1).r > dark.surface(0).r);
+    try std.testing.expect(dark.surface(2).r > dark.surface(1).r);
+    try std.testing.expect(dark.surface(3).r > dark.surface(2).r);
+    try std.testing.expectEqual(@as(u8, 255), dark.hoverOverlay().r);
+
+    var light = Theme.default();
+    light.background = .{ .r = 240, .g = 240, .b = 238, .a = 255 };
+    light.foreground = .{ .r = 26, .g = 26, .b = 26, .a = 255 };
+    try std.testing.expect(light.isLight());
+    try std.testing.expect(light.surface(1).r < light.surface(0).r);
+    try std.testing.expect(light.surface(3).r < light.surface(2).r);
+    try std.testing.expectEqual(@as(u8, 0), light.hoverOverlay().r);
+    // Dim text sits between foreground and background.
+    const dim = light.chromeTextDim();
+    try std.testing.expect(dim.r > light.foreground.r and dim.r < light.background.r);
+    // Light scrims are softened.
+    try std.testing.expect(light.scrim(170).a < dark.scrim(170).a);
+}
+
+test "shadeToward clamps the fraction and the channels" {
+    const black = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = c.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    try std.testing.expect(colorsEqual(shadeToward(black, white, 0.0), black));
+    try std.testing.expect(colorsEqual(shadeToward(black, white, 1.0), white));
+    try std.testing.expect(colorsEqual(shadeToward(black, white, 7.0), white));
+    try std.testing.expect(colorsEqual(shadeToward(black, white, -1.0), black));
+    try std.testing.expectEqual(@as(u8, 128), shadeToward(black, white, 0.5).r);
 }

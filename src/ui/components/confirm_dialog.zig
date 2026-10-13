@@ -205,7 +205,8 @@ pub const ConfirmDialogComponent = struct {
         const confirm_tex = self.confirm_tex orelse return;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
+        const scrim_tint = host.theme.scrim(170);
+        _ = c.SDL_SetRenderDrawColor(renderer, scrim_tint.r, scrim_tint.g, scrim_tint.b, scrim_tint.a);
         const overlay = c.SDL_FRect{
             .x = 0,
             .y = 0,
@@ -259,7 +260,8 @@ pub const ConfirmDialogComponent = struct {
         primitives.fillRoundedRect(renderer, buttons.cancel, fill_radius);
         if (self.cancel_hovered) {
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, buttons.cancel, fill_radius);
         }
         const acc = theme.accent;
@@ -271,7 +273,8 @@ pub const ConfirmDialogComponent = struct {
         primitives.fillRoundedRect(renderer, buttons.confirm, fill_radius);
         if (self.confirm_hovered) {
             _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-            _ = c.SDL_SetRenderDrawColor(renderer, 255, 255, 255, 25);
+            const hover_tint = theme.hoverOverlay();
+            _ = c.SDL_SetRenderDrawColor(renderer, hover_tint.r, hover_tint.g, hover_tint.b, hover_tint.a);
             primitives.fillRoundedRect(renderer, buttons.confirm, fill_radius);
         }
         const bright_red = theme.palette[9];
