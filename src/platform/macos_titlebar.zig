@@ -26,7 +26,7 @@ const Impl = if (is_macos) struct {
     const MsgSendIntArg = *const fn (?*anyopaque, ?*anyopaque, i64) callconv(.c) void;
     const MsgSendFloatArg = *const fn (?*anyopaque, ?*anyopaque, f64) callconv(.c) ?*anyopaque;
     const MsgSendSizeArg = *const fn (?*anyopaque, ?*anyopaque, f64, f64) callconv(.c) void;
-    const MsgSendRgba = *const fn (?*anyopaque, ?*anyopaque, f64, f64, f64, f64) callconv(.c) ?*anyopaque;
+    const MsgSend4Float = *const fn (?*anyopaque, ?*anyopaque, f64, f64, f64, f64) callconv(.c) ?*anyopaque;
     const NSRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
     const MsgSendRect = *const fn (?*anyopaque, ?*anyopaque) callconv(.c) NSRect;
 
@@ -49,7 +49,7 @@ const Impl = if (is_macos) struct {
 
         const msg_send_id = @as(MsgSendIdArg, @ptrCast(&c.objc_msgSend));
         const msg_send_bool = @as(MsgSendBoolArg, @ptrCast(&c.objc_msgSend));
-        const msg_send_rgba = @as(MsgSendRgba, @ptrCast(&c.objc_msgSend));
+        const msg_send_rgba = @as(MsgSend4Float, @ptrCast(&c.objc_msgSend));
 
         // [window setTitlebarAppearsTransparent:YES] lets backgroundColor show
         // through the title bar; the content view keeps its normal frame.
@@ -80,12 +80,16 @@ const Impl = if (is_macos) struct {
         const ns_text_field = c.objc_getClass("NSTextField") orelse return false;
         const ns_font = c.objc_getClass("NSFont") orelse return false;
         const ns_accessory_vc = c.objc_getClass("NSTitlebarAccessoryViewController") orelse return false;
+        const ns_view = c.objc_getClass("NSView") orelse return false;
         const sel_label_with = c.sel_registerName("labelWithString:") orelse return false;
         const sel_title_font = c.sel_registerName("titleBarFontOfSize:") orelse return false;
         const sel_set_font = c.sel_registerName("setFont:") orelse return false;
         const sel_size_to_fit = c.sel_registerName("sizeToFit") orelse return false;
         const sel_frame = c.sel_registerName("frame") orelse return false;
-        const sel_set_frame_size = c.sel_registerName("setFrameSize:") orelse return false;
+        const sel_set_frame_origin = c.sel_registerName("setFrameOrigin:") orelse return false;
+        const sel_content_view = c.sel_registerName("contentView") orelse return false;
+        const sel_init_with_frame = c.sel_registerName("initWithFrame:") orelse return false;
+        const sel_add_subview = c.sel_registerName("addSubview:") orelse return false;
         const sel_alloc = c.sel_registerName("alloc") orelse return false;
         const sel_init = c.sel_registerName("init") orelse return false;
         const sel_set_view = c.sel_registerName("setView:") orelse return false;
@@ -99,19 +103,30 @@ const Impl = if (is_macos) struct {
         const msg_send_float = @as(MsgSendFloatArg, @ptrCast(&c.objc_msgSend));
         const msg_send_size = @as(MsgSendSizeArg, @ptrCast(&c.objc_msgSend));
         const msg_send_rect = @as(MsgSendRect, @ptrCast(&c.objc_msgSend));
+        const msg_send_4float = @as(MsgSend4Float, @ptrCast(&c.objc_msgSend));
 
         const name_str = msg_send_id(ns_string, sel_utf8, cstrArg(name)) orelse return false;
         const label = msg_send_id(ns_text_field, sel_label_with, name_str) orelse return false;
         // Same face as the system title so it reads as the window title, not a widget.
         if (msg_send_float(ns_font, sel_title_font, 0)) |font| _ = msg_send_id(label, sel_set_font, font);
         _ = msg_send(label, sel_size_to_fit);
-        // Widen the frame so the (left-aligned) text ends a padding before the window edge.
-        const frame = msg_send_rect(label, sel_frame);
-        msg_send_size(label, sel_set_frame_size, frame.w + title_right_padding, frame.h);
+        const label_frame = msg_send_rect(label, sel_frame);
+
+        // AppKit top-aligns a right accessory at the view's own height, so wrap
+        // the label in a container as tall as the title bar and center it there.
+        // Title bar height = window frame minus content view frame.
+        const window_frame = msg_send_rect(ns_window, sel_frame);
+        const content_view = msg_send(ns_window, sel_content_view) orelse return false;
+        const content_frame = msg_send_rect(content_view, sel_frame);
+        const titlebar_h = @max(window_frame.h - content_frame.h, label_frame.h);
+        const container_alloc = msg_send(ns_view, sel_alloc) orelse return false;
+        const container = msg_send_4float(container_alloc, sel_init_with_frame, 0, 0, label_frame.w + title_right_padding, titlebar_h) orelse return false;
+        msg_send_size(label, sel_set_frame_origin, 0, (titlebar_h - label_frame.h) / 2);
+        _ = msg_send_id(container, sel_add_subview, label);
 
         const vc_alloc = msg_send(ns_accessory_vc, sel_alloc) orelse return false;
         const vc = msg_send(vc_alloc, sel_init) orelse return false;
-        _ = msg_send_id(vc, sel_set_view, label);
+        _ = msg_send_id(vc, sel_set_view, container);
         msg_send_int(vc, sel_set_layout, ns_layout_attribute_right);
         _ = msg_send_id(ns_window, sel_add_accessory, vc);
         msg_send_int(ns_window, sel_title_visibility, ns_window_title_hidden);
