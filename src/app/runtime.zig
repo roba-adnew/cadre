@@ -27,6 +27,11 @@ const macos_titlebar = @import("../platform/macos_titlebar.zig");
 /// User-facing app name (window title bar, bundle display name). Internal
 /// identifiers (config dir, sockets, tmux prefix, env vars) keep "cadre".
 pub const app_name: [*:0]const u8 = "CADRE";
+/// An isolated instance (CADRE_CONFIG_DIR set, e.g. scripts/dev-instance.sh)
+/// is titled distinctly so its windows are never mistaken for the daily app's.
+fn windowTitle() [*:0]const u8 {
+    return if (std.posix.getenv("CADRE_CONFIG_DIR") != null) "CADRE (dev)" else app_name;
+}
 const input = @import("../input/mapper.zig");
 const renderer_mod = @import("../render/renderer.zig");
 const pty_mod = @import("../pty.zig");
@@ -1825,7 +1830,7 @@ const Window = struct {
             null;
 
         self.pw = try platform.initWindow(
-            app_name,
+            windowTitle(),
             geometry.width,
             geometry.height,
             window_pos,
@@ -1833,7 +1838,7 @@ const Window = struct {
         );
         errdefer platform.deinitWindow(&self.pw);
         self.window_id = platform.windowId(&self.pw);
-        macos_titlebar.style(self.pw.window, app_name, app.theme.background.r, app.theme.background.g, app.theme.background.b);
+        macos_titlebar.style(self.pw.window, windowTitle(), app.theme.background.r, app.theme.background.g, app.theme.background.b);
         platform.startTextInput(self.pw.window);
         errdefer platform.stopTextInput(self.pw.window);
         self.text_input_active = true;
@@ -4432,6 +4437,8 @@ pub fn run() !void {
     }
     app.applyVsyncFocus(app.focusedWindow());
     log.info("restored {d} window(s)", .{app.windows.items.len});
+    // A bare-binary launch (dev instance) can come up behind other apps.
+    _ = c.SDL_RaiseWindow(app.focusedWindow().pw.window);
 
     // Now that every restored/first session has reattached and holds a client,
     // drain the socket's detached-session graveyard (crashed instances, closed
