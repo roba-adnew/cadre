@@ -325,6 +325,32 @@ committed re-slot flips the mode for its own slide). Escape re-slots the tile
 back to its origin; reveal of a hidden terminal mints a fresh `order_seq` so
 it lands at the end of the grid.
 
+**Cross-window branch.** SDL keeps the pressed button captured, so the source
+window still gets motion/up events past its edge. Motion outside the render
+area never re-slots (the edge clamp would snap the tile to the last
+column/row). Release outside emits `UiAction.DragSessionOut{idx, origin,
+screen_x, screen_y}` (global pointer from `SDL_GetGlobalMouseState`), which
+the window's drain only parks on `App.pending_drag_out`; `App.applyPendingDragOut`
+runs after every window's drain (two windows mutate):
+
+```
+windowAtPoint(screen) -> pickWindowAtPoint(rects, last_focused)
+    | another window:  App.moveSession(src, idx, dst)
+    |                  -> dropSlotForPoint(dst geometry) -> dst.reorderVisible(landed, slot)
+    |                  -> src with no spawned terminals left: closing_window = src
+    |                  (target full: toast "Window is full" + springboard back to origin)
+    | empty screen:    pending_new_window{x,y = drop - 24pt, move_from = src/idx}
+    |                  (lone visible tile: toast "Already its own window" + springboard back)
+    v
+```
+
+While a drag is active, `App.updateDropHints` resolves the window under the
+global pointer each frame and sets `drop_hint` on that window's
+`SessionInteractionComponent`, which draws the lift-cue outline on the slot
+(never on the source, which draws its own). A window focus-loss mid-drag no
+longer ends the gesture while the left button is still held globally, since
+the release will arrive in a sibling window.
+
 ### External Notification Path
 
 ```

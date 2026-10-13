@@ -55,8 +55,9 @@ pub const RestartButtonsComponent = struct {
                 const mouse_x: c_int = @intFromFloat(event.button.x);
                 const mouse_y: c_int = @intFromFloat(event.button.y);
 
-                const grid_col: usize = @min(@as(usize, @intCast(@divFloor(mouse_x, host.cell_w))), host.grid_cols - 1);
-                const grid_row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, host.cell_h))), host.grid_rows - 1);
+                // Pointer can be outside the window (captured drag): never cast a negative.
+                const grid_col: usize = @min(@as(usize, @intCast(@max(0, @divFloor(mouse_x, host.cell_w)))), host.grid_cols - 1);
+                const grid_row: usize = @min(@as(usize, @intCast(@max(0, @divFloor(mouse_y, host.cell_h)))), host.grid_rows - 1);
                 const clicked_session: usize = grid_row * host.grid_cols + grid_col;
                 if (clicked_session >= host.sessions.len) return false;
 
@@ -111,6 +112,8 @@ pub const RestartButtonsComponent = struct {
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *RestartButtonsComponent = @ptrCast(@alignCast(self_ptr));
         if (host.view_mode != .Grid) return false;
+        // Pointer can be outside the window (captured drag): never cast a negative.
+        if (x < 0 or y < 0) return false;
 
         const grid_col: usize = @min(@as(usize, @intCast(@divFloor(x, host.cell_w))), host.grid_cols - 1);
         const grid_row: usize = @min(@as(usize, @intCast(@divFloor(y, host.cell_h))), host.grid_rows - 1);

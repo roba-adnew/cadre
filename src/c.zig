@@ -117,6 +117,7 @@ pub const SDL_SYSTEM_CURSOR_POINTER = c_import.SDL_SYSTEM_CURSOR_POINTER;
 /// move cursor exists there) — used as the drag-reorder "fist".
 pub const SDL_SYSTEM_CURSOR_MOVE = c_import.SDL_SYSTEM_CURSOR_MOVE;
 pub const SDL_GetModState = c_import.SDL_GetModState;
+pub const SDL_GetGlobalMouseState = c_import.SDL_GetGlobalMouseState;
 pub const SDL_Scancode = c_import.SDL_Scancode;
 pub const SDL_SCANCODE_HOME = c_import.SDL_SCANCODE_HOME;
 pub const SDL_SCANCODE_END = c_import.SDL_SCANCODE_END;

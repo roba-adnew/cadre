@@ -1190,6 +1190,8 @@ const App = struct {
     /// Session move between two existing windows, applied after every
     /// window's action drain so both grids change in one place.
     pending_move: ?MoveRequest,
+    /// Drag-out resolved after every window's action drain (see applyPendingDragOut).
+    pending_drag_out: ?DragOutRequest,
 
     fn focusedWindow(self: *App) *Window {
         return self.last_focused orelse self.windows.items[0];
@@ -1518,6 +1520,141 @@ const App = struct {
         _ = c.SDL_RaiseWindow(req.dst.pw.window);
     }
 
+    fn windowRect(window: *const Window) WindowRect {
+        var x: c_int = 0;
+        var y: c_int = 0;
+        var w: c_int = 0;
+        var h: c_int = 0;
+        if (!c.SDL_GetWindowPosition(window.pw.window, &x, &y)) log.warn("could not read window position: {s}", .{c.SDL_GetError()});
+        if (!c.SDL_GetWindowSize(window.pw.window, &w, &h)) log.warn("could not read window size: {s}", .{c.SDL_GetError()});
+        return .{ .x = x, .y = y, .w = w, .h = h };
+    }
+
+    /// Window under a screen point (points), preferring the last focused one
+    /// when windows overlap. A window being closed never counts.
+    fn windowAtPoint(self: *App, x: c_int, y: c_int) ?*Window {
+        var rects: [max_windows]WindowRect = undefined;
+        const n = @min(self.windows.items.len, max_windows);
+        var preferred: ?usize = null;
+        for (self.windows.items[0..n], 0..) |w, i| {
+            rects[i] = if (w == self.closing_window) .{ .x = 0, .y = 0, .w = 0, .h = 0 } else windowRect(w);
+            if (w == self.last_focused) preferred = i;
+        }
+        const idx = pickWindowAtPoint(rects[0..n], preferred, x, y) orelse return null;
+        return self.windows.items[idx];
+    }
+
+    /// Slot of `window` under a screen point, using its live grid geometry.
+    fn dropSlotIn(window: *const Window, screen_x: c_int, screen_y: c_int) ?usize {
+        return dropSlotForPoint(
+            screen_x,
+            screen_y,
+            windowRect(window),
+            window.scale_x,
+            window.scale_y,
+            window.cell_width_pixels,
+            window.cell_height_pixels,
+            window.grid.cols,
+            window.grid.rows,
+            countVisibleSessions(window.sessions),
+        );
+    }
+
+    /// A tile released outside its window: onto another Cadre window it moves
+    /// there and lands on the slot under the pointer; onto empty screen it
+    /// opens a new window at the drop point. Runs after every window's action
+    /// drain since two windows change.
+    fn applyPendingDragOut(self: *App, now: i64) void {
+        const req = self.pending_drag_out orelse return;
+        self.pending_drag_out = null;
+        const src = req.src;
+        if (self.windowIndexOrNull(src) == null or self.closing_window == src) return;
+        if (req.idx >= src.sessions.len or !src.sessions[req.idx].isVisible()) return;
+
+        const target = self.windowAtPoint(req.screen_x, req.screen_y);
+        if (target == null or target.? == src) {
+            if (target != null) return; // released over the source after all: the live re-slots already stand
+            if (countVisibleSessions(src.sessions) <= 1) {
+                src.ui.showToast("Already its own window", now);
+                self.springboardBack(src, req.idx, req.origin, now);
+                return;
+            }
+            if (self.pending_new_window != null or self.windows.items.len >= max_windows) {
+                src.ui.showToast(if (self.pending_new_window != null) "Try again" else "Window limit reached", now);
+                self.springboardBack(src, req.idx, req.origin, now);
+                return;
+            }
+            self.pending_new_window = .{
+                .width = src.window_width_points,
+                .height = src.window_height_points,
+                .x = @max(req.screen_x - drop_window_inset_points, 0),
+                .y = @max(req.screen_y - drop_window_inset_points, 0),
+                .cwd = null,
+                .move_from = .{ .window = src, .idx = req.idx },
+            };
+            log.info("drag-out: opening a window at ({d}, {d}) for slot {d} of window {d}", .{ req.screen_x, req.screen_y, req.idx, src.window_id });
+            return;
+        }
+
+        const dst = target.?;
+        dst.session_interaction_component.setDropHint(null);
+        const moving_id = src.sessions[req.idx].id;
+        self.moveSession(src, req.idx, dst, now) catch |err| {
+            log.warn("drag-out move into window {d} failed: {}", .{ dst.window_id, err });
+            if (err == error.TargetFull) dst.ui.showToast("Window is full", now) else src.ui.showToast("Could not move terminal", now);
+            self.springboardBack(src, req.idx, req.origin, now);
+            return;
+        };
+        // Land where it was dropped: the move appended the tile at the end of
+        // the target grid, so springboard it to the slot under the pointer.
+        if (findSessionIndexById(dst.sessions, moving_id)) |landed| {
+            if (dropSlotIn(dst, req.screen_x, req.screen_y)) |slot| {
+                if (slot != landed) dst.reorderVisible(landed, slot, now);
+            }
+        }
+        if (countSpawnedSessions(src.sessions) == 0) {
+            // Nothing left to confirm; the empty source goes away at frame end.
+            log.info("drag-out emptied window {d}; closing it", .{src.window_id});
+            self.closing_window = src;
+        }
+        _ = c.SDL_RaiseWindow(dst.pw.window);
+    }
+
+    /// Cancelled drag-out: the live re-slots stand, so put the tile back
+    /// where the drag started (same as Escape).
+    fn springboardBack(self: *App, window: *Window, from: usize, origin: usize, now: i64) void {
+        _ = self;
+        if (from != origin) window.reorderVisible(from, origin, now);
+    }
+
+    /// While a drag is in flight, outline the slot under the pointer in the
+    /// window it hovers (never the source: it draws its own lift cue).
+    fn updateDropHints(self: *App) void {
+        var src: ?*Window = null;
+        for (self.windows.items) |w| {
+            if (w.session_interaction_component.isReordering()) {
+                src = w;
+                break;
+            }
+        }
+        var target: ?*Window = null;
+        var slot: ?usize = null;
+        if (src != null) {
+            var gx: f32 = 0;
+            var gy: f32 = 0;
+            _ = c.SDL_GetGlobalMouseState(&gx, &gy);
+            const sx: c_int = @intFromFloat(gx);
+            const sy: c_int = @intFromFloat(gy);
+            target = self.windowAtPoint(sx, sy);
+            if (target) |t| {
+                if (t != src.?) slot = dropSlotIn(t, sx, sy);
+            }
+        }
+        for (self.windows.items) |w| {
+            w.session_interaction_component.setDropHint(if (target == w and w != src) slot else null);
+        }
+    }
+
     fn windowIndexOrNull(self: *const App, window: *const Window) ?usize {
         for (self.windows.items, 0..) |w, i| {
             if (w == window) return i;
@@ -1654,6 +1791,55 @@ const NewWindowRequest = struct {
 
 const MoveSource = struct { window: *Window, idx: usize };
 const MoveRequest = struct { src: *Window, idx: usize, dst: *Window };
+/// A grid tile released outside its window at screen point (x, y).
+const DragOutRequest = struct { src: *Window, idx: usize, origin: usize, screen_x: c_int, screen_y: c_int };
+/// New-window top-left sits this far up/left of the drop point.
+const drop_window_inset_points: c_int = 24;
+
+pub const WindowRect = struct { x: c_int, y: c_int, w: c_int, h: c_int };
+
+fn rectContains(r: WindowRect, x: c_int, y: c_int) bool {
+    return x >= r.x and y >= r.y and x < r.x + r.w and y < r.y + r.h;
+}
+
+/// Index of the window under screen point (x, y). When several overlap the
+/// `preferred` one (last focused, i.e. most likely on top) wins, else the
+/// first match.
+pub fn pickWindowAtPoint(rects: []const WindowRect, preferred: ?usize, x: c_int, y: c_int) ?usize {
+    if (preferred) |p| {
+        if (p < rects.len and rectContains(rects[p], x, y)) return p;
+    }
+    for (rects, 0..) |r, i| {
+        if (rectContains(r, x, y)) return i;
+    }
+    return null;
+}
+
+/// Grid slot of `rect`'s window under screen point (x, y), or null when the
+/// point is outside the window or past the last visible tile. `visible <= 1`
+/// means the window shows a single pane filling it: slot 0.
+pub fn dropSlotForPoint(
+    screen_x: c_int,
+    screen_y: c_int,
+    rect: WindowRect,
+    scale_x: f32,
+    scale_y: f32,
+    cell_w: c_int,
+    cell_h: c_int,
+    cols: usize,
+    rows: usize,
+    visible: usize,
+) ?usize {
+    if (!rectContains(rect, screen_x, screen_y)) return null;
+    if (visible <= 1) return 0;
+    if (cell_w <= 0 or cell_h <= 0 or cols == 0 or rows == 0) return null;
+    const px: c_int = @intFromFloat(@as(f32, @floatFromInt(screen_x - rect.x)) * scale_x);
+    const py: c_int = @intFromFloat(@as(f32, @floatFromInt(screen_y - rect.y)) * scale_y);
+    const col: usize = @min(@as(usize, @intCast(@divFloor(px, cell_w))), cols - 1);
+    const row: usize = @min(@as(usize, @intCast(@divFloor(py, cell_h))), rows - 1);
+    const slot: usize = row * cols + col;
+    return if (slot < visible) slot else null;
+}
 
 /// Hand the visible session at `src_idx` to `dst_idx` of another window by
 /// swapping the slot pointers: the target's (never-spawned) placeholder takes
@@ -2323,6 +2509,58 @@ const Window = struct {
     /// Grid half of a removal (close, hide or move-out): compact the slots,
     /// shrink the grid, animate the reflow from `old_positions` when given,
     /// re-focus a visible pane, and respawn a fresh shell when nothing is left.
+    /// Springboard the visible tile at slot `from` to slot `to` (live reorder
+    /// step, Escape cancel, or a cross-window drop landing on its slot).
+    fn reorderVisible(self: *Window, from: usize, to: usize, now: i64) void {
+        const app = self.app;
+        const allocator = app.allocator;
+        const sessions = self.sessions;
+        const visible = countVisibleSessions(sessions);
+        if (from >= visible or to >= visible or from == to) return;
+        var order_buf: [grid_layout.max_terminals]usize = undefined;
+        const order = springboardOrder(&order_buf, visible, from, to);
+        // Snapshot pre-reorder indices so the slide can animate each
+        // tile from where it was; taken before applyReorder permutes.
+        var snapshots: ?std.ArrayList(SessionIndexSnapshot) = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
+            log.warn("failed to snapshot reorder positions (slide skipped): {}", .{err});
+            break :blk null;
+        };
+        defer if (snapshots) |*snaps| snaps.deinit(allocator);
+        if (applyReorder(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state, order)) {
+            // Tiles changed cells; repaint every visible pane. PTY
+            // sizes are untouched — a pure permutation keeps the
+            // uniform grid winsize, so no resize fires.
+            for (sessions) |session| {
+                if (session.isVisible()) session.markDirty();
+            }
+            app.persistence_dirty = true;
+            // Slide tiles to their new cells. Unlike add/remove
+            // reflows this also starts while a previous slide is in
+            // flight (mode == .GridResizing): startResizeWithDuration
+            // retargets from the drawn mid-flight rects, which is what
+            // keeps rapid re-slots smooth instead of snapping.
+            if (app.animations_enabled and (self.anim_state.mode == .Grid or self.anim_state.mode == .GridResizing)) {
+                if (snapshots) |snaps| {
+                    var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snaps.items, allocator) catch |err| blk: {
+                        log.warn("failed to collect reorder moves (slide skipped): {}", .{err});
+                        break :blk null;
+                    };
+                    if (move_result) |*moves| {
+                        defer moves.list.deinit(allocator);
+                        if (moves.moved) {
+                            self.grid.startResizeWithDuration(self.grid.cols, self.grid.rows, now, self.render_width, self.render_height, moves.list.items, GridLayout.reorder_duration_ms) catch |err| {
+                                log.warn("failed to start reorder slide: {}", .{err});
+                            };
+                            if (self.grid.is_resizing) {
+                                self.anim_state.mode = .GridResizing;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn reflowAfterRemoval(self: *Window, old_positions: ?[]const SessionIndexSnapshot, now: i64) void {
         const app = self.app;
         const allocator = app.allocator;
@@ -2334,7 +2572,15 @@ const Window = struct {
         const max_spawned_idx = highestVisibleIndex(sessions);
         const required_slots = if (max_spawned_idx) |max_idx| max_idx + 1 else 0;
 
-        if (remaining_count == 0) {
+        if (remaining_count == 0 and app.windows.items.len > 1 and countSpawnedSessions(sessions) == 0) {
+            // Nothing left in this window (not even hidden) and other windows
+            // exist: leave it empty so the caller closes it instead of
+            // respawning a shell nobody asked for (drag-out / move-out path).
+            self.anim_state.focused_session = 0;
+            self.grid.cols = 1;
+            self.grid.rows = 1;
+            self.anim_state.mode = .Full;
+        } else if (remaining_count == 0) {
             // Re-spawn a fresh terminal in slot 0
             sessions[0].ensureSpawnedWithLoop(&app.loop) catch |err| {
                 std.debug.print("Failed to respawn terminal: {}\n", .{err});
@@ -3596,52 +3842,7 @@ const Window = struct {
                 self.session_interaction_component.setAttention(idx, false, now);
                 self.anim_state.focused_session = idx;
             },
-            .ReorderGridSessions => |move| {
-                const visible = countVisibleSessions(sessions);
-                if (move.from >= visible or move.to >= visible or move.from == move.to) continue;
-                var order_buf: [grid_layout.max_terminals]usize = undefined;
-                const order = springboardOrder(&order_buf, visible, move.from, move.to);
-                // Snapshot pre-reorder indices so the slide can animate each
-                // tile from where it was; taken before applyReorder permutes.
-                var snapshots: ?std.ArrayList(SessionIndexSnapshot) = collectSessionIndexSnapshots(sessions, allocator) catch |err| blk: {
-                    log.warn("failed to snapshot reorder positions (slide skipped): {}", .{err});
-                    break :blk null;
-                };
-                defer if (snapshots) |*snaps| snaps.deinit(allocator);
-                if (applyReorder(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state, order)) {
-                    // Tiles changed cells; repaint every visible pane. PTY
-                    // sizes are untouched — a pure permutation keeps the
-                    // uniform grid winsize, so no resize fires.
-                    for (sessions) |session| {
-                        if (session.isVisible()) session.markDirty();
-                    }
-                    app.persistence_dirty = true;
-                    // Slide tiles to their new cells. Unlike add/remove
-                    // reflows this also starts while a previous slide is in
-                    // flight (mode == .GridResizing): startResizeWithDuration
-                    // retargets from the drawn mid-flight rects, which is what
-                    // keeps rapid re-slots smooth instead of snapping.
-                    if (app.animations_enabled and (self.anim_state.mode == .Grid or self.anim_state.mode == .GridResizing)) {
-                        if (snapshots) |snaps| {
-                            var move_result: ?SessionMoves = collectSessionMovesFromSnapshots(sessions, snaps.items, allocator) catch |err| blk: {
-                                log.warn("failed to collect reorder moves (slide skipped): {}", .{err});
-                                break :blk null;
-                            };
-                            if (move_result) |*moves| {
-                                defer moves.list.deinit(allocator);
-                                if (moves.moved) {
-                                    self.grid.startResizeWithDuration(self.grid.cols, self.grid.rows, now, self.render_width, self.render_height, moves.list.items, GridLayout.reorder_duration_ms) catch |err| {
-                                        log.warn("failed to start reorder slide: {}", .{err});
-                                    };
-                                    if (self.grid.is_resizing) {
-                                        self.anim_state.mode = .GridResizing;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
+            .ReorderGridSessions => |move| self.reorderVisible(move.from, move.to, now),
             .RevealHiddenTerminal => |idx| {
                 if (idx >= sessions.len) continue;
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
@@ -3730,6 +3931,10 @@ const Window = struct {
                 const dst = app.windows.items[mv.window_index];
                 if (dst == self or app.pending_move != null) continue;
                 app.pending_move = .{ .src = self, .idx = mv.idx, .dst = dst };
+            },
+            .DragSessionOut => |d| {
+                if (app.pending_drag_out != null) continue;
+                app.pending_drag_out = .{ .src = self, .idx = d.idx, .origin = d.origin, .screen_x = d.screen_x, .screen_y = d.screen_y };
             },
             .OpenConfig => {
                 if (config_mod.Config.getConfigPath(allocator)) |config_path| {
@@ -4404,6 +4609,7 @@ pub fn run() !void {
     app.pending_new_window = null;
     app.closing_window = null;
     app.pending_move = null;
+    app.pending_drag_out = null;
 
     // Pool sessions outlive every window (UI components reference them), so
     // this defer is registered first and runs after the windows are destroyed.
@@ -4582,6 +4788,8 @@ pub fn run() !void {
             try window.update(now);
         }
         app.applyPendingMove(now);
+        app.applyPendingDragOut(now);
+        app.updateDropHints();
 
         var is_idle = true;
         for (app.windows.items) |window| {
@@ -5562,4 +5770,35 @@ test "syncPersistenceTerminalEntriesFromSlices groups entries by window" {
     try std.testing.expect(try syncPersistenceTerminalEntriesFromSlices(&persistence, &moved, allocator));
     try std.testing.expectEqual(@as(usize, 0), persistence.terminal_entries.items[0].window_index);
     try std.testing.expectEqualStrings("/w1", persistence.terminal_entries.items[0].path);
+}
+
+test "pickWindowAtPoint prefers the focused window when windows overlap" {
+    const rects = [_]WindowRect{
+        .{ .x = 0, .y = 0, .w = 800, .h = 600 },
+        .{ .x = 400, .y = 300, .w = 800, .h = 600 },
+    };
+    // Overlap region: both contain (500, 400); preferred wins.
+    try std.testing.expectEqual(@as(?usize, 1), pickWindowAtPoint(&rects, 1, 500, 400));
+    try std.testing.expectEqual(@as(?usize, 0), pickWindowAtPoint(&rects, 0, 500, 400));
+    // Preferred not under the point: first match.
+    try std.testing.expectEqual(@as(?usize, 0), pickWindowAtPoint(&rects, 1, 10, 10));
+    try std.testing.expectEqual(@as(?usize, 1), pickWindowAtPoint(&rects, 0, 1100, 800));
+    // Empty screen and a stale preferred index.
+    try std.testing.expectEqual(@as(?usize, null), pickWindowAtPoint(&rects, 0, 1300, 10));
+    try std.testing.expectEqual(@as(?usize, null), pickWindowAtPoint(&rects, 7, 1300, 10));
+}
+
+test "dropSlotForPoint maps a screen point to the target grid slot" {
+    // 800x600pt window at (100, 100), 2x retina, 2x2 grid of 800x600px cells.
+    const rect = WindowRect{ .x = 100, .y = 100, .w = 800, .h = 600 };
+    try std.testing.expectEqual(@as(?usize, 0), dropSlotForPoint(110, 110, rect, 2.0, 2.0, 800, 600, 2, 2, 4));
+    try std.testing.expectEqual(@as(?usize, 1), dropSlotForPoint(600, 110, rect, 2.0, 2.0, 800, 600, 2, 2, 4));
+    try std.testing.expectEqual(@as(?usize, 2), dropSlotForPoint(110, 500, rect, 2.0, 2.0, 800, 600, 2, 2, 4));
+    try std.testing.expectEqual(@as(?usize, 3), dropSlotForPoint(899, 699, rect, 2.0, 2.0, 800, 600, 2, 2, 4));
+    // Past the last visible tile (3 tiles in a 2x2 grid): no slot.
+    try std.testing.expectEqual(@as(?usize, null), dropSlotForPoint(899, 699, rect, 2.0, 2.0, 800, 600, 2, 2, 3));
+    // Outside the window.
+    try std.testing.expectEqual(@as(?usize, null), dropSlotForPoint(50, 110, rect, 2.0, 2.0, 800, 600, 2, 2, 4));
+    // A single full-window pane is slot 0 anywhere inside.
+    try std.testing.expectEqual(@as(?usize, 0), dropSlotForPoint(700, 500, rect, 2.0, 2.0, 1600, 1200, 1, 1, 1));
 }

@@ -53,6 +53,9 @@ pub const UiRoot = struct {
     }
 
     pub fn hitTest(self: *UiRoot, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        // A captured drag reports pointer positions outside the window; nothing
+        // is under a negative coordinate, and components index grids from it.
+        if (x < 0 or y < 0) return false;
         var i: usize = self.components.items.len;
         while (i > 0) {
             i -= 1;
