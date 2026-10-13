@@ -15,7 +15,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘↵", .desc = "Focus selected pane" },
     .{ .key = "⌘N", .desc = "New terminal" },
     .{ .key = "⌘⇧N", .desc = "New window" },
-    .{ .key = "⌘⇧P", .desc = "Pop terminal out to its own window" },
+    .{ .key = "⌘⇧P", .desc = "Move terminal to a separate window" },
     .{ .key = "⌘⇧W", .desc = "Close window" },
     .{ .key = "⌘T", .desc = "Open worktree picker" },
     .{ .key = "⌘O", .desc = "Open recent folders" },

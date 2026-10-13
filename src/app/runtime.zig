@@ -1392,15 +1392,15 @@ const App = struct {
     /// step (after the event drain). A lone visible terminal stays put.
     fn requestMoveToNewWindow(self: *App, from: *Window, idx: usize) void {
         const now = std.time.milliTimestamp();
-        log.info("pop-out requested: window {d} idx {d} visible {d} pending {} closing {} mode {s}", .{
+        log.info("move to separate window requested: window {d} idx {d} visible {d} pending {} closing {} mode {s}", .{
             from.window_id, idx, countVisibleSessions(from.sessions), self.pending_new_window != null, self.closing_window == from, @tagName(from.anim_state.mode),
         });
         if (self.pending_new_window != null or self.closing_window == from) {
-            log.warn("pop-out ignored: a window request or close is already pending", .{});
+            log.warn("move ignored: a window request or close is already pending", .{});
             return;
         }
         if (idx >= from.sessions.len or !from.sessions[idx].isVisible()) {
-            log.warn("pop-out ignored: focused slot {d} is not a visible terminal", .{idx});
+            log.warn("move ignored: focused slot {d} is not a visible terminal", .{idx});
             return;
         }
         if (countVisibleSessions(from.sessions) <= 1) {

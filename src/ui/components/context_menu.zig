@@ -29,7 +29,7 @@ pub const items = [_]Item{
     .{ .label = "Paste", .shortcut = "⌘V", .key = null },
     .{ .label = "New Terminal", .shortcut = "⌘N", .key = c.SDLK_N, .separator_before = true },
     .{ .label = "New Window", .shortcut = "⌘⇧N", .key = c.SDLK_N, .shift = true },
-    .{ .label = "Pop Out to New Window", .shortcut = "⌘⇧P", .key = c.SDLK_P, .shift = true },
+    .{ .label = "Move to Separate Window", .shortcut = "⌘⇧P", .key = c.SDLK_P, .shift = true },
     .{ .label = "Hide Terminal", .shortcut = "⌘J", .key = c.SDLK_J },
     .{ .label = "Close Terminal", .shortcut = "⌘W", .key = c.SDLK_W },
     .{ .label = "Close Window", .shortcut = "⌘⇧W", .key = c.SDLK_W, .shift = true },
