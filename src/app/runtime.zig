@@ -3843,6 +3843,22 @@ const Window = struct {
                 self.anim_state.focused_session = idx;
             },
             .ReorderGridSessions => |move| self.reorderVisible(move.from, move.to, now),
+            .CloseHiddenTerminal => |idx| {
+                if (idx >= sessions.len) continue;
+                if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
+                if (sessions[idx].hasForegroundProcessThorough()) {
+                    self.confirm_dialog_component.show(
+                        "Delete Terminal?",
+                        "A process is running. Delete anyway?",
+                        "Delete",
+                        "Cancel",
+                        .{ .DespawnSession = idx },
+                    );
+                } else {
+                    self.despawnSessionAtIndex(idx, false, now);
+                    self.ui.showToast("Closed terminal", now);
+                }
+            },
             .RevealHiddenTerminal => |idx| {
                 if (idx >= sessions.len) continue;
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;

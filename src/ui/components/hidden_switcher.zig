@@ -140,7 +140,7 @@ pub const HiddenSwitcherComponent = struct {
 
     /// Modal geometry, shared by render() and mouse hit-testing so clicks land on
     /// exactly what's drawn. `n` is the filtered row count.
-    const Layout = struct { modal: geom.Rect, pad: c_int, gap: c_int, title_h: c_int, search_h: c_int, row_h: c_int, radius: c_int, rows_y0: c_int };
+    const Layout = struct { modal: geom.Rect, pad: c_int, gap: c_int, title_h: c_int, search_h: c_int, row_h: c_int, radius: c_int, rows_y0: c_int, close_w: c_int };
 
     fn computeLayout(host: *const types.UiHost, n: usize) Layout {
         const s = host.ui_scale;
@@ -163,6 +163,18 @@ pub const HiddenSwitcherComponent = struct {
             .row_h = row_h,
             .radius = dpi.scale(10, s),
             .rows_y0 = modal_y + pad + title_h + gap + search_h + gap,
+            .close_w = dpi.scale(24, s),
+        };
+    }
+
+    /// Square hit box of the per-row close X, flush with the row's right edge.
+    fn closeRect(l: Layout, row: usize) geom.Rect {
+        const row_y = l.rows_y0 + @as(c_int, @intCast(row)) * l.row_h;
+        return .{
+            .x = l.modal.x + l.modal.w - l.pad - l.close_w,
+            .y = row_y + @divFloor(l.row_h - l.close_w, 2),
+            .w = l.close_w,
+            .h = l.close_w,
         };
     }
 
@@ -206,6 +218,14 @@ pub const HiddenSwitcherComponent = struct {
                 var buf: [max_entries]usize = undefined;
                 const n = collectHidden(host.sessions, self.query(), &buf);
                 if (rowAt(host, n, mx, my)) |row| {
+                    if (geom.containsPoint(closeRect(computeLayout(host, n), row), mx, my)) {
+                        // Stay open so several can be closed in a row; render
+                        // auto-dismisses once nothing is hidden.
+                        out.append(.{ .CloseHiddenTerminal = buf[row] }) catch |err| {
+                            log.warn("failed to queue close action: {}", .{err});
+                        };
+                        return true;
+                    }
                     out.append(.{ .RevealHiddenTerminal = buf[row] }) catch |err| {
                         log.warn("failed to queue reveal action: {}", .{err});
                     };
@@ -402,7 +422,18 @@ pub const HiddenSwitcherComponent = struct {
                 log.warn("label format failed: {}", .{err});
                 break :blk statusLabel(info);
             };
-            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info), modal_x + modal_w - pad - gap, row_center);
+            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info), modal_x + modal_w - pad - l.close_w - gap, row_center);
+
+            if (i == sel) {
+                const xr = closeRect(l, i);
+                const over_x = host.mouse_has_position and geom.containsPoint(xr, host.mouse_x, host.mouse_y);
+                if (over_x) {
+                    _ = c.SDL_SetRenderDrawColor(renderer, theme.foreground.r, theme.foreground.g, theme.foreground.b, 40);
+                    primitives.fillRoundedRect(renderer, xr, dpi.scale(5, ui_scale));
+                }
+                const x_color = if (over_x) theme.palette[1] else theme.foreground; // red on hover
+                drawTextCentered(self.allocator, renderer, row_fonts.regular, "\u{00D7}", x_color, xr.x + @divFloor(xr.w, 2), row_center);
+            }
         }
     }
 
@@ -423,6 +454,19 @@ fn drawText(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font: *c.TT
     defer c.SDL_DestroyTexture(tex.tex);
     _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
         .x = @floatFromInt(x),
+        .y = @floatFromInt(center_y - @divFloor(tex.h, 2)),
+        .w = @floatFromInt(tex.w),
+        .h = @floatFromInt(tex.h),
+    });
+}
+
+/// Same as drawText but centered on `center_x`.
+fn drawTextCentered(allocator: std.mem.Allocator, renderer: *c.SDL_Renderer, font: *c.TTF_Font, text: []const u8, color: c.SDL_Color, center_x: c_int, center_y: c_int) void {
+    if (text.len == 0) return;
+    const tex = search_utils.makeTextTexture(allocator, renderer, font, text, color) catch return;
+    defer c.SDL_DestroyTexture(tex.tex);
+    _ = c.SDL_RenderTexture(renderer, tex.tex, null, &c.SDL_FRect{
+        .x = @floatFromInt(center_x - @divFloor(tex.w, 2)),
         .y = @floatFromInt(center_y - @divFloor(tex.h, 2)),
         .w = @floatFromInt(tex.w),
         .h = @floatFromInt(tex.h),
@@ -549,4 +593,37 @@ test "backspaceQuery removes a whole UTF-8 codepoint" {
     try std.testing.expectEqual(@as(usize, 0), sw.query_len);
     sw.backspaceQuery(); // no-op on empty
     try std.testing.expectEqual(@as(usize, 0), sw.query_len);
+}
+
+test "closeRect sits inside its row at the right edge" {
+    const theme = colors.Theme.default();
+    const host = types.UiHost{
+        .now_ms = 0,
+        .window_w = 1200,
+        .window_h = 800,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 0,
+        .cell_h = 0,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &test_sessions,
+        .theme = &theme,
+    };
+    const l = HiddenSwitcherComponent.computeLayout(&host, 2);
+    const r1 = HiddenSwitcherComponent.closeRect(l, 1);
+    const row1_y = l.rows_y0 + l.row_h;
+    try std.testing.expect(r1.y >= row1_y and r1.y + r1.h <= row1_y + l.row_h);
+    try std.testing.expectEqual(l.modal.x + l.modal.w - l.pad, r1.x + r1.w);
+    // The X's center is a row hit AND a close hit; the row's left edge is a row hit only.
+    const cx = r1.x + @divFloor(r1.w, 2);
+    const cy = r1.y + @divFloor(r1.h, 2);
+    try std.testing.expectEqual(@as(?usize, 1), HiddenSwitcherComponent.rowAt(&host, 2, cx, cy));
+    try std.testing.expect(geom.containsPoint(r1, cx, cy));
+    try std.testing.expect(!geom.containsPoint(r1, l.modal.x + l.pad, cy));
 }

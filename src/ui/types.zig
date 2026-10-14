@@ -104,6 +104,9 @@ pub const UiAction = union(enum) {
     /// Un-hide the session at this index (the hidden-terminals switcher picked it)
     /// and bring it back into the grid.
     RevealHiddenTerminal: usize,
+    /// Close the hidden session at this index (the switcher row's X). Runtime
+    /// confirms first when a foreground process is running, like Cmd+W.
+    CloseHiddenTerminal: usize,
     RequestCollapseFocused: void,
     /// Right-click on a focused terminal: paste the clipboard into it
     /// (PuTTY/xterm-style). Routed as an action so the paste path (image
