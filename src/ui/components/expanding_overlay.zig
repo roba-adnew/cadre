@@ -1,6 +1,13 @@
+const std = @import("std");
 const geom = @import("../../geom.zig");
 const easing = @import("../../anim/easing.zig");
 const dpi = @import("../../dpi.zig");
+
+/// 1.0 = the top-right pill strip sits at its normal place; 0.0 = slid off the
+/// right edge. Driven by the pill group's hover tray so the pills stay out of the
+/// way until the user asks for them. All pills share it, so it is one global.
+// ponytail: module global, pass a reveal factor per rect() call if a second strip ever exists
+pub var reveal: f32 = 1.0;
 
 pub const ExpandingOverlay = struct {
     state: State = .Closed,
@@ -71,7 +78,9 @@ pub const ExpandingOverlay = struct {
         const margin = dpi.scale(self.margin, ui_scale);
         const size = self.currentSize(now, ui_scale);
         const spacing = dpi.scale(self.small_size + self.margin, ui_scale);
-        const x = window_width - margin - size - @as(c_int, @intCast(self.slot)) * spacing;
+        const x_home = window_width - margin - size - @as(c_int, @intCast(self.slot)) * spacing;
+        const hidden_shift = @as(f32, @floatFromInt(window_width - x_home)) * (1.0 - reveal);
+        const x = x_home + @as(c_int, @intFromFloat(hidden_shift));
         const y = margin;
 
         const height = blk: {
@@ -98,3 +107,17 @@ pub const ExpandingOverlay = struct {
         return geom.Rect{ .x = x, .y = y, .w = size, .h = height };
     }
 };
+
+test "reveal slides the pill strip off the right edge" {
+    const overlay = ExpandingOverlay.init(1, 20, 40, 40, 1);
+    reveal = 1.0;
+    const home = overlay.rect(0, 800, 600, 1.0);
+    try std.testing.expectEqual(@as(c_int, 800 - 20 - 40 - 60), home.x);
+    reveal = 0.0;
+    const gone = overlay.rect(0, 800, 600, 1.0);
+    try std.testing.expectEqual(@as(c_int, 800), gone.x);
+    reveal = 0.5;
+    const half = overlay.rect(0, 800, 600, 1.0);
+    try std.testing.expect(half.x > home.x and half.x < gone.x);
+    reveal = 1.0;
+}
