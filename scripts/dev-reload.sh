@@ -120,20 +120,32 @@ else
     ./scripts/bundle-macos.sh zig-out/bin/cadre "$staging" zig-out/bin/cadre-mcp
 fi
 
-# Hand the swap+relaunch to a detached process. It outlives this shell, so the
-# new Cadre comes up even if quitting the old one tears down our terminal.
-echo "==> Quitting Cadre (waiting for agents to shut down + flush) and relaunching..."
+# Stage the new bundle NEXT TO the target before quitting anything. While the
+# old app is still alive this shell's TCC attribution (which hangs off
+# /Applications/Cadre.app) is intact, and if the detached swap below dies for
+# any reason the fresh bundle is sitting in plain sight in /Applications, not
+# stranded in a temp dir.
+new_bundle="/Applications/Cadre.app.new"
+old_bundle="/Applications/Cadre.app.old"
+rm -rf "$new_bundle" "$old_bundle"
+mv "$staging/Cadre.app" "$new_bundle"
+rm -rf "$staging"
+trap - EXIT
+
+# Hand the quit+swap+relaunch to a detached process. It outlives this shell, so
+# the new Cadre comes up even if quitting the old one tears down our terminal.
+# Everything it does is logged: a silent worker is undebuggable after the fact.
+reload_log="$HOME/Library/Logs/Cadre/reload.log"
+mkdir -p "$(dirname "$reload_log")"
+echo "==> Quitting Cadre (waiting for agents to shut down + flush) and relaunching... (log: $reload_log)"
 old_pid="$(daily_pid)"
 # Variables below are for the inner shell, not this one (intentional single quotes).
 # shellcheck disable=SC2016
-# Hand the staging dir to the detached worker: our EXIT trap must NOT delete
-# it while the worker is still waiting for the old app to quit (that race
-# once removed the old bundle and then had nothing to install).
-trap - EXIT
 nohup bash -c '
-    set -e
-    staging="$1"
-    old_pid="$2"
+    old_pid="$1"; new_bundle="$2"; old_bundle="$3"; log="$4"
+    exec >>"$log" 2>&1
+    set -x
+    echo "== $(date) reload worker start (old pid: ${old_pid:-none})"
     # Quit gracefully, then block until the old process exits. This matters for
     # agent resume: on quit, Cadre Ctrl+Cs each running agent so Claude
     # flushes its session to disk before exiting. Force-killing instead kills the
@@ -141,25 +153,34 @@ nohup bash -c '
     # caffeinate -w waits on the process-exit event (no polling, no re-sending the
     # quit). A watchdog force-kills ONLY if the teardown truly hangs (~5 min),
     # which loses agent state.
-    osascript -e "quit app \"Cadre\"" 2>/dev/null || true
+    osascript -e "quit app \"Cadre\"" || true
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
         ( sleep 300; kill -TERM "$old_pid" 2>/dev/null; sleep 2; kill -KILL "$old_pid" 2>/dev/null ) &
         watchdog=$!
-        caffeinate -w "$old_pid" 2>/dev/null || true
+        caffeinate -w "$old_pid" || true
         kill "$watchdog" 2>/dev/null || true
         wait "$watchdog" 2>/dev/null || true
     fi
-    rm -rf "/Applications/Cadre.app"
-    mv "$staging/Cadre.app" "/Applications/Cadre.app"
-    rm -rf "$staging"
+    # Swap by rename inside /Applications: no step ever leaves the install
+    # without SOME bundle for longer than one rename, and nothing here touches a
+    # TCC-protected path. If the new bundle cannot be moved in, put the old one
+    # back rather than leaving /Applications empty (an empty install also locks
+    # every Cadre-spawned shell out of ~/Documents via TCC attribution).
+    mv "/Applications/Cadre.app" "$old_bundle" || true
+    if ! mv "$new_bundle" "/Applications/Cadre.app"; then
+        if ! ditto "$new_bundle" "/Applications/Cadre.app"; then
+            echo "swap failed; restoring old bundle"
+            rm -rf "/Applications/Cadre.app"
+            mv "$old_bundle" "/Applications/Cadre.app" || true
+        fi
+    fi
+    rm -rf "$new_bundle" "$old_bundle"
     open "/Applications/Cadre.app"
     # `open` normally activates, but after a bundle swap the new window has come
     # up behind the current app; activate explicitly once it is running.
-    sleep 2; osascript -e 'tell application "Cadre" to activate' 2>/dev/null || true
-' _ "$staging" "$old_pid" >/dev/null 2>&1 &
+    sleep 2; osascript -e "tell application \"Cadre\" to activate" || true
+    echo "== $(date) reload worker done"
+' _ "$old_pid" "$new_bundle" "$old_bundle" "$reload_log" >/dev/null 2>&1 &
 disown
-
-# The detached job owns the staging dir now; do not let our EXIT trap delete it.
-trap - EXIT
 
 echo "==> Done. Cadre will close and reopen on the fresh build."

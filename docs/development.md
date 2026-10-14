@@ -70,6 +70,14 @@ relaunches it. Use it to avoid restarting a stale binary after editing source â€
 the installed app alone never picks up source changes. The Claude Code skill
 `/reload-cadre` runs the same script.
 
+The swap is done by a detached worker: the new bundle is staged as
+`/Applications/Cadre.app.new` *before* the old app is quit, then renamed into place
+and the old one removed. If the swap fails the old bundle is restored, so
+`/Applications` is never left without a `Cadre.app` (an empty install also locks
+every Cadre-spawned shell out of `~/Documents` via TCC attribution). The worker
+logs every step to `~/Library/Logs/Cadre/reload.log`; read that first when a
+reload does not come back.
+
 **Reload guard.** `dev-reload.sh` refuses to run while the installed app has live
 agent descendants (`claude`/`codex`/`gemini`), because restarting it kills those
 agents mid-turn and a bridged `claude --resume` can come back from a stale (rewound)
