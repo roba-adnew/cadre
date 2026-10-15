@@ -28,13 +28,17 @@ const GridLayout = grid_layout.GridLayout;
 const attention_thickness: c_int = 3;
 
 /// Set once per frame at the top of render(); read by the overlay helpers so the
-/// selected pane's border is solid when Cadre is focused and dashed when it's
-/// in the background. Frame-scoped render state, not persisted UI state.
+/// selected pane's solid border is dropped when Cadre is in the background (every
+/// pane gets a dashed yellow border instead). Frame-scoped render state, not
+/// persisted UI state.
 var frame_window_focused: bool = true;
 pub const terminal_padding: c_int = 8;
 pub const grid_border_thickness: c_int = attention_thickness;
 const faint_factor: f32 = 0.6;
 const cursor_color = c.SDL_Color{ .r = 215, .g = 186, .b = 125, .a = 255 };
+/// Bright yellow (Claude Code's "auto mode" color) so the backgrounded-selection
+/// border stands out from the blue focus/accent borders.
+const inactive_border_rgb = c.SDL_Color{ .r = 249, .g = 217, .b = 73, .a = 255 };
 const dark_fallback = c.SDL_Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
 
 pub const RenderError = font_mod.Font.RenderGlyphError;
@@ -332,31 +336,37 @@ pub fn render(
         },
     }
 
-    // App-focus indicator: when Cadre is NOT the frontmost app, outline the
-    // selected pane (the whole window in Full view) with a dashed accent border.
-    // Solid border = focused; dashed = app in the background. Drawn fresh on top
-    // every frame so it tracks focus immediately. inactive_overlay_alpha gates it
-    // (0 = off) and sets the border's opacity.
+    // App-focus indicator: when Cadre is NOT the frontmost app, outline every
+    // visible pane (the whole window in Full view) with a dashed yellow border.
+    // Drawn last so it sits on top of the selection/focus/attention borders, and
+    // fresh every frame so it tracks focus immediately. inactive_overlay_alpha
+    // gates it (0 = off) and sets the border's opacity.
     if (!window_focused and inactive_overlay_alpha > 0) {
-        const focused_rect = switch (anim_state.mode) {
-            .Grid, .GridResizing => Rect{
-                .x = @as(c_int, @intCast(anim_state.focused_session % grid_cols)) * cell_width_pixels,
-                .y = @as(c_int, @intCast(anim_state.focused_session / grid_cols)) * cell_height_pixels,
-                .w = cell_width_pixels,
-                .h = cell_height_pixels,
+        const color = c.SDL_Color{ .r = inactive_border_rgb.r, .g = inactive_border_rgb.g, .b = inactive_border_rgb.b, .a = inactive_overlay_alpha };
+        switch (anim_state.mode) {
+            .Grid, .GridResizing => for (sessions[0..grid_slots_to_render], 0..) |session, i| {
+                if (!session.isVisible()) continue;
+                drawInactiveBorder(renderer, .{
+                    .x = @as(c_int, @intCast(i % grid_cols)) * cell_width_pixels,
+                    .y = @as(c_int, @intCast(i / grid_cols)) * cell_height_pixels,
+                    .w = cell_width_pixels,
+                    .h = cell_height_pixels,
+                }, color, ui_scale);
             },
-            else => Rect{ .x = 0, .y = 0, .w = window_width, .h = window_height },
-        };
-        const acc = theme.accent;
-        primitives.drawDashedBorder(
-            renderer,
-            focused_rect,
-            dpi.scale(attention_thickness, ui_scale),
-            dpi.scale(14, ui_scale),
-            dpi.scale(10, ui_scale),
-            .{ .r = acc.r, .g = acc.g, .b = acc.b, .a = inactive_overlay_alpha },
-        );
+            else => drawInactiveBorder(renderer, .{ .x = 0, .y = 0, .w = window_width, .h = window_height }, color, ui_scale),
+        }
     }
+}
+
+fn drawInactiveBorder(renderer: *c.SDL_Renderer, rect: Rect, color: c.SDL_Color, ui_scale: f32) void {
+    primitives.drawDashedBorder(
+        renderer,
+        rect,
+        dpi.scale(attention_thickness, ui_scale),
+        dpi.scale(14, ui_scale),
+        dpi.scale(10, ui_scale),
+        color,
+    );
 }
 
 fn renderSession(
@@ -743,7 +753,7 @@ fn renderSessionOverlays(
 
         if (is_focused and frame_window_focused) {
             // Selected pane while Cadre is focused: solid accent border. When
-            // the app is backgrounded, render() draws a dashed accent border here
+            // the app is backgrounded, render() draws a dashed yellow border here
             // instead, so this solid one is suppressed to avoid doubling up.
             const focus_accent = theme.accent;
             const inset: c_int = if (has_attention) border_thickness else 0;
