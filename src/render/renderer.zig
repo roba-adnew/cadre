@@ -337,7 +337,8 @@ pub fn render(
     }
 
     // App-focus indicator: when Cadre is NOT the frontmost app, outline every
-    // visible pane (the whole window in Full view) with a solid yellow border.
+    // visible pane (the whole window in Full view) with a solid yellow border and a
+    // faint yellow tint.
     // Drawn last so it sits on top of the selection/focus/attention borders, and
     // fresh every frame so it tracks focus immediately. inactive_overlay_alpha
     // gates it (0 = off) and sets the border's opacity.
@@ -359,6 +360,15 @@ pub fn render(
 }
 
 fn drawInactiveBorder(renderer: *c.SDL_Renderer, rect: Rect, color: c.SDL_Color, ui_scale: f32) void {
+    // Yellow wash over the pane: 1/4 of the border's alpha (~20% at the default 204).
+    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
+    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a / 4);
+    _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
+        .x = @floatFromInt(rect.x),
+        .y = @floatFromInt(rect.y),
+        .w = @floatFromInt(rect.w),
+        .h = @floatFromInt(rect.h),
+    });
     // 80% of attention_thickness; float math so the 20% cut survives rounding at 2x.
     const thickness: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, attention_thickness) * 0.8 * ui_scale))));
     primitives.drawThickBorder(renderer, rect, thickness, 0, color);
