@@ -29,7 +29,7 @@ const attention_thickness: c_int = 3;
 
 /// Set once per frame at the top of render(); read by the overlay helpers so the
 /// selected pane's solid border is dropped when Cadre is in the background (every
-/// pane gets a dashed yellow border instead). Frame-scoped render state, not
+/// pane gets a solid yellow border instead). Frame-scoped render state, not
 /// persisted UI state.
 var frame_window_focused: bool = true;
 pub const terminal_padding: c_int = 8;
@@ -337,7 +337,7 @@ pub fn render(
     }
 
     // App-focus indicator: when Cadre is NOT the frontmost app, outline every
-    // visible pane (the whole window in Full view) with a dashed yellow border.
+    // visible pane (the whole window in Full view) with a solid yellow border.
     // Drawn last so it sits on top of the selection/focus/attention borders, and
     // fresh every frame so it tracks focus immediately. inactive_overlay_alpha
     // gates it (0 = off) and sets the border's opacity.
@@ -359,14 +359,9 @@ pub fn render(
 }
 
 fn drawInactiveBorder(renderer: *c.SDL_Renderer, rect: Rect, color: c.SDL_Color, ui_scale: f32) void {
-    primitives.drawDashedBorder(
-        renderer,
-        rect,
-        dpi.scale(attention_thickness, ui_scale),
-        dpi.scale(14, ui_scale),
-        dpi.scale(10, ui_scale),
-        color,
-    );
+    // 80% of attention_thickness; float math so the 20% cut survives rounding at 2x.
+    const thickness: c_int = @max(1, @as(c_int, @intFromFloat(@round(@as(f32, attention_thickness) * 0.8 * ui_scale))));
+    primitives.drawThickBorder(renderer, rect, thickness, 0, color);
 }
 
 fn renderSession(
@@ -753,7 +748,7 @@ fn renderSessionOverlays(
 
         if (is_focused and frame_window_focused) {
             // Selected pane while Cadre is focused: solid accent border. When
-            // the app is backgrounded, render() draws a dashed yellow border here
+            // the app is backgrounded, render() draws a solid yellow border here
             // instead, so this solid one is suppressed to avoid doubling up.
             const focus_accent = theme.accent;
             const inset: c_int = if (has_attention) border_thickness else 0;

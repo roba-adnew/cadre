@@ -88,7 +88,7 @@ pub const GridConfig = struct {
 pub const UiConfig = struct {
     show_hotkey_feedback: bool = true,
     enable_animations: bool = true,
-    /// Opacity (0-255) of the dashed yellow border drawn around every pane
+    /// Opacity (0-255) of the yellow border drawn around every pane
     /// when the Cadre window is NOT the frontmost app. 0 disables it.
     inactive_overlay_alpha: i32 = 204,
 };
@@ -1204,7 +1204,7 @@ pub const Config = struct {
             \\# [ui]
             \\# show_hotkey_feedback = true
             \\# enable_animations = true
-            \\# inactive_overlay_alpha = 204  # 0-255 opacity of the dashed "not focused" pane border (0 = off)
+            \\# inactive_overlay_alpha = 204  # 0-255 opacity of the yellow "not focused" pane border (0 = off)
             \\
             \\# Notification options
             \\# [notifications]

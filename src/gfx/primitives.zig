@@ -180,38 +180,6 @@ pub fn drawThickBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, 
     }
 }
 
-/// Draws a dashed rectangular border `thickness` px wide, with `dash`/`gap` run
-/// lengths along each edge. Square corners — it reads clearly as "dashed" and is
-/// distinct from the solid focus border. Sets its own blend mode + color.
-pub fn drawDashedBorder(renderer: *c.SDL_Renderer, rect: Rect, thickness: c_int, dash: c_int, gap: c_int, color: c.SDL_Color) void {
-    if (rect.w <= 0 or rect.h <= 0 or thickness <= 0) return;
-    const step = dash + gap;
-    if (step <= 0) return;
-    _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-    _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-    const t: f32 = @floatFromInt(thickness);
-
-    // Top and bottom edges (horizontal dashes).
-    var x: c_int = rect.x;
-    while (x < rect.x + rect.w) : (x += step) {
-        const w: c_int = @min(dash, rect.x + rect.w - x);
-        const fx: f32 = @floatFromInt(x);
-        const fw: f32 = @floatFromInt(w);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = fx, .y = @floatFromInt(rect.y), .w = fw, .h = t });
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = fx, .y = @floatFromInt(rect.y + rect.h - thickness), .w = fw, .h = t });
-    }
-
-    // Left and right edges (vertical dashes).
-    var y: c_int = rect.y;
-    while (y < rect.y + rect.h) : (y += step) {
-        const h: c_int = @min(dash, rect.y + rect.h - y);
-        const fy: f32 = @floatFromInt(y);
-        const fh: f32 = @floatFromInt(h);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(rect.x), .y = fy, .w = t, .h = fh });
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(rect.x + rect.w - thickness), .y = fy, .w = t, .h = fh });
-    }
-}
-
 const XSpan = struct { left: f32, right: f32 };
 
 fn roundedRectXSpan(rect: Rect, radius: c_int, y: c_int) ?XSpan {
