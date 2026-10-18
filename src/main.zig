@@ -21,6 +21,7 @@ test {
     _ = @import("shell.zig");
     _ = @import("ui/components/hidden_switcher.zig");
     _ = @import("ui/components/expanding_overlay.zig");
+    _ = @import("ui/components/pill_group.zig");
     _ = @import("anim/easing.zig");
     _ = @import("session/osc_title.zig");
     _ = @import("config.zig");

@@ -37,6 +37,7 @@ pub const PillGroupComponent = struct {
     reveal_target: f32 = 0,
     reveal_start_ms: i64 = 0,
     tray_hovered: bool = false,
+    strip_hovered: bool = false,
     first_frame: FirstFrameGuard = .{},
 
     pub fn create(
@@ -107,8 +108,8 @@ pub const PillGroupComponent = struct {
                 const mx: c_int = @intFromFloat(event.motion.x);
                 const my: c_int = @intFromFloat(event.motion.y);
                 self.tray_hovered = geom.containsPoint(trayRect(host), mx, my);
-                const in_strip = self.reveal_target > 0 and geom.containsPoint(stripRect(host), mx, my);
-                if (self.tray_hovered or in_strip) self.setRevealTarget(1, host.now_ms);
+                self.strip_hovered = geom.containsPoint(stripRect(host), mx, my);
+                if (self.tray_hovered or (self.reveal_target > 0 and self.strip_hovered)) self.setRevealTarget(1, host.now_ms);
                 return false;
             },
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -119,7 +120,10 @@ pub const PillGroupComponent = struct {
                     return true;
                 }
             },
-            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => self.tray_hovered = false,
+            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                self.tray_hovered = false;
+                self.strip_hovered = false;
+            },
             else => {},
         }
         return false;
@@ -198,8 +202,8 @@ pub const PillGroupComponent = struct {
         self.last_worktree_state = worktree_state;
 
         // Slide the strip away once the pointer has left it and nothing is open.
-        const pointer_in_strip = geom.containsPoint(stripRect(host), host.mouse_x, host.mouse_y);
-        if (!self.anyOverlayOpen() and !self.tray_hovered and !pointer_in_strip) {
+        // Hover comes from motion events: the per-frame host carries no pointer.
+        if (!self.anyOverlayOpen() and !self.tray_hovered and !self.strip_hovered) {
             self.setRevealTarget(0, host.now_ms);
         } else if (self.anyOverlayOpen()) {
             self.setRevealTarget(1, host.now_ms);
@@ -273,3 +277,56 @@ pub const PillGroupComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "pill strip stays revealed after the pointer leaves the tray for a pill" {
+    const colors = @import("../../colors.zig");
+    const alloc = std.testing.allocator;
+    var help = HelpOverlayComponent{ .allocator = alloc };
+    var recent = RecentFoldersOverlayComponent{ .allocator = alloc };
+    var worktree = WorktreeOverlayComponent{ .allocator = alloc };
+    var hidden = HiddenIndicatorComponent{ .allocator = alloc, .switcher = undefined };
+    var group = PillGroupComponent{ .allocator = alloc, .help = &help, .recent_folders = &recent, .worktree = &worktree, .hidden_indicator = &hidden };
+    var queue = types.UiActionQueue.init(alloc);
+    defer queue.deinit();
+    const theme = colors.Theme.default();
+    var host = types.UiHost{
+        .now_ms = 0,
+        .window_w = 1200,
+        .window_h = 800,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 0,
+        .cell_h = 0,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &.{},
+        .theme = &theme,
+    };
+    var ev = std.mem.zeroes(c.SDL_Event);
+    ev.motion.type = c.SDL_EVENT_MOUSE_MOTION;
+
+    // Hover the tray, then move onto the first pill (left of and below it).
+    const tray = PillGroupComponent.trayRect(&host);
+    ev.motion.x = @floatFromInt(tray.x + 2);
+    ev.motion.y = @floatFromInt(tray.y + 2);
+    _ = PillGroupComponent.handleEvent(&group, &host, &ev, &queue);
+    PillGroupComponent.update(&group, &host, &queue);
+    ev.motion.x = @floatFromInt(host.window_w - 40);
+    ev.motion.y = 50;
+    _ = PillGroupComponent.handleEvent(&group, &host, &ev, &queue);
+    host.now_ms = 1000;
+    PillGroupComponent.update(&group, &host, &queue);
+    try std.testing.expectEqual(@as(f32, 1), group.reveal_target);
+
+    // Leaving the strip slides it away.
+    ev.motion.x = 10;
+    ev.motion.y = 400;
+    _ = PillGroupComponent.handleEvent(&group, &host, &ev, &queue);
+    PillGroupComponent.update(&group, &host, &queue);
+    try std.testing.expectEqual(@as(f32, 0), group.reveal_target);
+}
