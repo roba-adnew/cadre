@@ -211,8 +211,10 @@ pub const PillGroupComponent = struct {
         expanding_overlay.reveal = self.reveal(host.now_ms);
     }
 
-    /// A half-size take on the app icon: light rounded body, 2x2 dark tiles,
-    /// accent mark on the first tile. Fades out as the pills slide in.
+    /// Two-tone, simplified take on the app icon in the theme's own colors: a
+    /// rounded body in the dim text tone, 2x2 background-colored panes, and a
+    /// prompt triangle (the icon's ">") cut back into the first pane in the
+    /// body tone. Fades out as the pills slide in.
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *PillGroupComponent = @ptrCast(@alignCast(self_ptr));
         defer self.first_frame.markDrawn();
@@ -221,10 +223,11 @@ pub const PillGroupComponent = struct {
         const alpha: u8 = @intFromFloat(alpha_f * 255.0);
         const r = trayRect(host);
         const theme = host.theme;
+        const body = theme.chromeTextDim();
+        const screen = theme.background;
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const body = theme.surface(2);
-        _ = c.SDL_SetRenderDrawColor(renderer, body.r, body.g, body.b, @intFromFloat(alpha_f * 235.0));
+        _ = c.SDL_SetRenderDrawColor(renderer, body.r, body.g, body.b, alpha);
         primitives.fillRoundedRect(renderer, r, @divFloor(r.w, 4));
         if (self.tray_hovered) {
             const tint = theme.hoverOverlay();
@@ -232,30 +235,32 @@ pub const PillGroupComponent = struct {
             primitives.fillRoundedRect(renderer, r, @divFloor(r.w, 4));
         }
 
-        // Tiles: 2x2 grid with a gutter of 1/10 of the icon.
-        const gutter = @max(1, @divFloor(r.w, 10));
-        const tile = @divFloor(r.w - 3 * gutter, 2);
-        const fg = theme.foreground;
-        var row: c_int = 0;
-        while (row < 2) : (row += 1) {
-            var col: c_int = 0;
-            while (col < 2) : (col += 1) {
-                const tx = r.x + gutter + col * (tile + gutter);
-                const ty = r.y + gutter + row * (tile + gutter);
-                _ = c.SDL_SetRenderDrawColor(renderer, fg.r, fg.g, fg.b, @intFromFloat(alpha_f * 90.0));
-                _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(tx), .y = @floatFromInt(ty), .w = @floatFromInt(tile), .h = @floatFromInt(tile) });
+        // Panes on the design's 40-unit grid: 12-unit panes at 6 and 21, radius 2.
+        const pane = @divFloor(r.w * 12, 40);
+        const pane_at = [_]c_int{ @divFloor(r.w * 6, 40), @divFloor(r.w * 21, 40) };
+        _ = c.SDL_SetRenderDrawColor(renderer, screen.r, screen.g, screen.b, alpha);
+        for (pane_at) |dy| {
+            for (pane_at) |dx| {
+                primitives.fillRoundedRect(renderer, .{ .x = r.x + dx, .y = r.y + dy, .w = pane, .h = pane }, @divFloor(r.w, 20));
             }
         }
-        // Accent mark in the first tile, like the ">" on the real icon.
-        const accent = theme.accent;
-        const mark = @max(2, @divFloor(tile, 2));
-        _ = c.SDL_SetRenderDrawColor(renderer, accent.r, accent.g, accent.b, alpha);
-        _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{
-            .x = @floatFromInt(r.x + gutter + @divFloor(tile - mark, 2)),
-            .y = @floatFromInt(r.y + gutter + @divFloor(tile - mark, 2)),
-            .w = @floatFromInt(mark),
-            .h = @floatFromInt(mark),
-        });
+
+        const px: f32 = @floatFromInt(r.x + pane_at[0]);
+        const py: f32 = @floatFromInt(r.y + pane_at[0]);
+        const ps: f32 = @floatFromInt(pane);
+        const prompt = c.SDL_FColor{
+            .r = @as(f32, @floatFromInt(body.r)) / 255.0,
+            .g = @as(f32, @floatFromInt(body.g)) / 255.0,
+            .b = @as(f32, @floatFromInt(body.b)) / 255.0,
+            .a = alpha_f,
+        };
+        const verts = [3]c.SDL_Vertex{
+            .{ .position = .{ .x = px + ps * 0.34, .y = py + ps * 0.26 }, .color = prompt },
+            .{ .position = .{ .x = px + ps * 0.34, .y = py + ps * 0.74 }, .color = prompt },
+            .{ .position = .{ .x = px + ps * 0.74, .y = py + ps * 0.5 }, .color = prompt },
+        };
+        const indices = [_]c_int{ 0, 1, 2 };
+        _ = c.SDL_RenderGeometry(renderer, null, &verts, 3, &indices, 3);
     }
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
