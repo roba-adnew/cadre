@@ -1,11 +1,15 @@
 ---
 name: reload-cadre
-description: Rebuild the Cadre app from the current worktree (committed + uncommitted local changes) and relaunch it, so the running app reflects in-progress code. Use when the user wants to see/test their Cadre changes in the actual app — e.g. "reload cadre", "rebuild and restart cadre", "run my changes", "relaunch with my edits", "I closed and reopened but don't see my changes".
+description: Rebuild the Cadre app from the current worktree (committed + uncommitted local changes) and relaunch it, so the running app reflects in-progress code. Use when the user wants to see/test their Cadre changes in the actual app — e.g. "reload cadre", "rebuild and restart cadre", "run my changes", "relaunch with my edits", "I closed and reopened but don't see my changes". Also run it on your own, unasked, as soon as a code change the user will want to see in the app builds cleanly; the user should never have to say "reload for me".
 ---
 
 # Reload Cadre
 
 Goal: get the running Cadre to be the build of **this worktree's current code** (including uncommitted changes). Editing source and relaunching the *installed* app does nothing — the `.app` must be rebuilt. This skill does build → quit → relaunch in one step via `scripts/dev-reload.sh`.
+
+## When to run it
+
+Run it yourself after every change to Cadre's code that the user will check in the running app, once it builds, then tell them it reloaded. Don't wait to be asked: over two weeks the user typed "reload for me" 19 times. The exceptions are when the user said not to reload, or when the change can't be seen in the app (tests or docs only).
 
 ## Steps
 
