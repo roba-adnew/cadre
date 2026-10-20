@@ -34,6 +34,12 @@ const font_pt: f64 = 14;
 /// Pause after the last edit before the draft is persisted (it is also
 /// persisted right away when the box hides or switches panes).
 const draft_save_delay_ms: i64 = 1000;
+/// The box's typeface (NSFont systemFontOfSize:), so a tile's draft preview
+/// doesn't change font when the tile gains focus.
+const preview_font_path = "/System/Library/Fonts/SFNS.ttf";
+/// The box's text insets (composer_view.zig textContainerInset), in points.
+const preview_inset_x: c_int = 12;
+const preview_inset_y: c_int = 9;
 const min_height_pt: c_int = 36;
 
 pub const Route = enum { composer, terminal, submit };
@@ -147,6 +153,16 @@ pub fn composerRect(area: Rect, content_h: c_int, ui_scale: f32) Rect {
     return .{ .x = area.x, .y = area.y + area.h - h, .w = area.w, .h = h };
 }
 
+/// First non-blank line of a draft, for a one-line preview.
+pub fn firstLine(text: []const u8) []const u8 {
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return "";
+}
+
 /// Text to send, or null when there is nothing but whitespace. Unicode line and
 /// paragraph separators (pasted from rich text) become "\n"; trailing
 /// whitespace is dropped so the send doesn't end in blank lines.
@@ -188,6 +204,9 @@ pub const ComposerComponent = struct {
     /// Edited since the draft was last handed to the runtime to persist.
     persist_pending: bool = false,
     last_edit_ms: i64 = 0,
+    /// System font for draft previews on unfocused tiles, matching the box.
+    preview_font: ?*c.TTF_Font = null,
+    preview_font_px: c_int = 0,
     first_frame: FirstFrameGuard = .{},
 
     pub fn init(allocator: std.mem.Allocator, window: *c.SDL_Window, root: *UiRoot) !*ComposerComponent {
@@ -358,6 +377,13 @@ pub const ComposerComponent = struct {
         const in_grid = host.view_mode == .Grid;
         const show = area != null and shouldShow(host) and !self.covered(host, rect);
 
+        // Edits belong to the pane they were made in: note them before a swap
+        // below binds the box to another pane.
+        if (self.visible and view.takeEdited()) {
+            self.persist_pending = true;
+            self.last_edit_ms = host.now_ms;
+        }
+
         if (show and self.visible and host.focused_session != self.session) {
             // Pane switched while the box stays up (grid tile or full view): swap drafts.
             self.persistDraft(view, out);
@@ -385,10 +411,6 @@ pub const ComposerComponent = struct {
         }
 
         if (self.visible) {
-            if (view.takeEdited()) {
-                self.persist_pending = true;
-                self.last_edit_ms = host.now_ms;
-            }
             if (self.persist_pending and host.now_ms - self.last_edit_ms >= draft_save_delay_ms) self.persistDraft(view, out);
             self.applyTheme(view, host);
             self.syncFocus(view, host);
@@ -536,7 +558,7 @@ pub const ComposerComponent = struct {
         return tileReservePx(host, i, live);
     }
 
-    fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
+    fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
         const line = host.theme.chromeBorder();
         // Unfocused Claude tiles show an empty strip where their box goes; a
@@ -551,12 +573,54 @@ pub const ComposerComponent = struct {
                 _ = c.SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
                 _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(strip.x), .y = @floatFromInt(strip.y), .w = @floatFromInt(strip.w), .h = @floatFromInt(strip.h) });
                 drawHairline(renderer, line, strip);
+                const draft = self.drafts.get(host.sessions[i].persist_index) orelse continue;
+                self.drawPreview(renderer, host, assets, strip, firstLine(draft));
             }
         }
         if (!self.visible) return;
         // Hairline over the box; the box itself is the native view.
         drawHairline(renderer, line, self.rect);
         self.first_frame.markDrawn();
+    }
+
+    /// An unfocused tile's unsent draft, shown read-only in its strip where the
+    /// box would put it, so selecting another tile doesn't make it vanish.
+    fn drawPreview(self: *ComposerComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets, strip: Rect, text: []const u8) void {
+        if (text.len == 0) return;
+        const font = self.previewFont(host, assets) orelse return;
+        const fg = host.theme.foreground;
+        const surface = c.TTF_RenderText_Blended(font, text.ptr, text.len, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 }) orelse return;
+        defer c.SDL_DestroySurface(surface);
+        const texture = c.SDL_CreateTextureFromSurface(renderer, surface) orelse return;
+        defer c.SDL_DestroyTexture(texture);
+        var w: f32 = 0;
+        var h: f32 = 0;
+        _ = c.SDL_GetTextureSize(texture, &w, &h);
+        // Clip to the strip: long drafts are cut at the tile edge, like a
+        // one-line box would scroll them.
+        const clip = c.SDL_Rect{ .x = strip.x, .y = strip.y, .w = strip.w, .h = strip.h };
+        _ = c.SDL_SetRenderClipRect(renderer, &clip);
+        defer _ = c.SDL_SetRenderClipRect(renderer, null);
+        _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
+            .x = @floatFromInt(strip.x + dpi.scale(preview_inset_x, host.ui_scale)),
+            .y = @floatFromInt(strip.y + dpi.scale(preview_inset_y, host.ui_scale)),
+            .w = w,
+            .h = h,
+        });
+    }
+
+    fn previewFont(self: *ComposerComponent, host: *const types.UiHost, assets: *types.UiAssets) ?*c.TTF_Font {
+        const px = dpi.scale(@intFromFloat(font_pt), host.ui_scale);
+        if (self.preview_font == null or self.preview_font_px != px) {
+            if (self.preview_font) |old| c.TTF_CloseFont(old);
+            self.preview_font = c.TTF_OpenFont(preview_font_path, @floatFromInt(px));
+            self.preview_font_px = px;
+        }
+        if (self.preview_font) |font| return font;
+        // No system font file: Cadre's own font at the same size.
+        const cache = assets.font_cache orelse return null;
+        const fonts = cache.get(px) catch return null;
+        return fonts.regular;
     }
 
     fn drawHairline(renderer: *c.SDL_Renderer, color: c.SDL_Color, rect: Rect) void {
@@ -578,6 +642,7 @@ pub const ComposerComponent = struct {
     fn deinitFn(ptr: *anyopaque, _: *c.SDL_Renderer) void {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
         if (self.view) |*view| view.destroy();
+        if (self.preview_font) |font| c.TTF_CloseFont(font);
         var it = self.drafts.valueIterator();
         while (it.next()) |text| self.allocator.free(text.*);
         self.drafts.deinit(self.allocator);
@@ -687,6 +752,12 @@ test "tileReservePx: live box on its tile, a strip on other Claude tiles, nothin
 
     host.cell_h = 90; // too short for the box plus a usable terminal
     try testing.expect(dockArea(&host) == null);
+}
+
+test "firstLine previews the first non-blank line" {
+    try testing.expectEqualStrings("hello there", firstLine("\n  hello there  \nsecond line"));
+    try testing.expectEqualStrings("", firstLine(" \n\t\n"));
+    try testing.expectEqualStrings("one", firstLine("one"));
 }
 
 test "normalizeSubmitText trims trailing blanks and rejects whitespace" {
