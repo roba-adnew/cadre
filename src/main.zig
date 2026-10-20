@@ -40,4 +40,6 @@ test {
     _ = @import("ui/types.zig");
     _ = @import("ui/components/context_menu.zig");
     _ = @import("os/host.zig");
+    _ = @import("ui/components/composer.zig");
+    _ = @import("ui/components/composer_view.zig");
 }

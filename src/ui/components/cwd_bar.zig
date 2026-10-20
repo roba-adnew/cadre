@@ -8,6 +8,7 @@ const renderer_mod = @import("../../render/renderer.zig");
 const dpi = @import("../../dpi.zig");
 const input = @import("../../input/mapper.zig");
 const metrics = @import("cwd_bar_metrics.zig");
+const ComposerComponent = @import("composer.zig").ComposerComponent;
 
 const log = std.log.scoped(.cwd_bar);
 
@@ -30,6 +31,9 @@ pub const CwdBarComponent = struct {
     font_generation: u64 = 0,
     session_caches: []SessionCache = &.{},
     max_sessions: usize = 0,
+    /// Claude tiles reserve a strip at the bottom for the composer; their bar
+    /// is drawn directly above it instead of at the tile's bottom edge.
+    composer: ?*const ComposerComponent = null,
 
     const SessionCache = struct {
         basename_tex: ?*c.SDL_Texture = null,
@@ -152,12 +156,15 @@ pub const CwdBarComponent = struct {
 
         if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
 
-        const bar_rect = Rect{
+        var bar_rect = Rect{
             .x = rect.x + border_thickness,
             .y = rect.y + rect.h - bar_height - border_thickness,
             .w = rect.w - border_thickness * 2,
             .h = bar_height,
         };
+        if (self.composer) |comp| {
+            if (grid_index) |i| bar_rect.y -= comp.gridReservePx(host, i);
+        }
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
         const panel_fill = host.theme.surface(2);

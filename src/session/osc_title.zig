@@ -30,15 +30,28 @@ pub fn scanOscTitle(data: []const u8) ?[]const u8 {
 /// prefix stripped (still borrows `raw`); the generic "Claude Code" placeholder
 /// returns null so it's treated as "no name".
 pub fn claudeSessionName(raw: []const u8) ?[]const u8 {
+    const name = claudeTitleBody(raw) orelse return null;
+    if (name.len == 0 or std.mem.eql(u8, name, "Claude Code")) return null;
+    return name;
+}
+
+/// True when `raw` has Claude Code's title shape, the "Claude Code" placeholder
+/// included. Live "Claude is running in this pane" signal: the shell retitles the
+/// pane when Claude exits.
+/// ponytail: shape check only; a shell theme that titles itself "<glyph> <text>"
+/// reads as Claude. Ask tmux for the pane's process if that ever bites.
+pub fn isClaudeTitle(raw: []const u8) bool {
+    return claudeTitleBody(raw) != null;
+}
+
+fn claudeTitleBody(raw: []const u8) ?[]const u8 {
     const t = std.mem.trim(u8, raw, " \t");
     if (t.len == 0) return null;
     const glyph_len = std.unicode.utf8ByteSequenceLength(t[0]) catch return null;
-    // ASCII-led (shell/git/plain) titles aren't Claude names; Claude's glyph is
-    // multibyte and always followed by a space.
+    // ASCII-led (shell/git/plain) titles aren't Claude's; its glyph is multibyte
+    // and always followed by a space.
     if (glyph_len == 1 or t.len <= glyph_len or t[glyph_len] != ' ') return null;
-    const name = std.mem.trim(u8, t[glyph_len + 1 ..], " \t");
-    if (name.len == 0 or std.mem.eql(u8, name, "Claude Code")) return null;
-    return name;
+    return std.mem.trim(u8, t[glyph_len + 1 ..], " \t");
 }
 
 test "scanOscTitle captures OSC 0/2 titles" {
@@ -57,4 +70,13 @@ test "claudeSessionName strips the status prefix and rejects non-Claude titles" 
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("\u{2733} Claude Code")); // generic placeholder
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("plain title")); // no glyph prefix
     try std.testing.expectEqual(@as(?[]const u8, null), claudeSessionName("")); // empty
+}
+
+test "isClaudeTitle accepts Claude title shapes, placeholder included" {
+    try std.testing.expect(isClaudeTitle("\u{2733} cadre"));
+    try std.testing.expect(isClaudeTitle("\u{2802} working"));
+    try std.testing.expect(isClaudeTitle("\u{2733} Claude Code")); // placeholder still means Claude is up
+    try std.testing.expect(!isClaudeTitle("ra-macbook-pro.local")); // shell retitled after exit
+    try std.testing.expect(!isClaudeTitle("\u{2733}")); // glyph alone
+    try std.testing.expect(!isClaudeTitle(""));
 }

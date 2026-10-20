@@ -22,6 +22,14 @@ pub const SessionUiInfo = struct {
     /// Terminal title set by the program (OSC 0/2) — e.g. the name from Claude
     /// Code's /rename — or null if unset. Borrows the session-owned string.
     agent_name: ?[]const u8 = null,
+    /// Claude Code is running in this pane right now (its title is up).
+    claude_live: bool = false,
+    /// Claude is waiting on a permission/input answer (see
+    /// `SessionViewState.approval_pending`; viewing the pane doesn't clear it).
+    approval_pending: bool = false,
+    /// Stable per-terminal id (`SessionState.persist_index`); unlike the slot
+    /// index it survives grid reorders, so per-terminal UI state keys on it.
+    persist_index: usize = 0,
 
     /// Spawned but pulled out of the grid — listed by the hidden-terminals switcher.
     pub fn isHidden(self: SessionUiInfo) bool {
@@ -93,6 +101,10 @@ pub const UiHost = struct {
     mouse_y: c_int = 0,
     mouse_has_position: bool = false,
     mouse_over_ui: bool = false,
+
+    /// An overlay that types into its own field (find bar, switcher filter, ...)
+    /// is open, so the composer hands SDL text input back to it.
+    text_entry_open: bool = false,
 };
 
 pub const UiAction = union(enum) {
@@ -141,6 +153,26 @@ pub const UiAction = union(enum) {
     ToggleReaderOverlay: void,
     SendDiffComments: SendDiffCommentsAction,
     OpenStory: OpenStoryAction,
+    /// The composer's Enter: paste the text into the session, then press Return.
+    ComposerSubmit: ComposerSubmitAction,
+    /// Pixels the composer occupies at the bottom of the full view (0 = hidden),
+    /// so the focused PTY is sized to the rows left above it.
+    SetComposerHeight: c_int,
+    /// Store a terminal's unsent draft so it survives a Cadre restart.
+    SaveComposerDraft: ComposerDraftAction,
+};
+
+/// Persist a terminal's unsent composer draft (empty clears it).
+pub const ComposerDraftAction = struct {
+    persist_index: usize,
+    /// Heap-allocated; ownership transfers to runtime, which frees after use.
+    text: []const u8,
+};
+
+pub const ComposerSubmitAction = struct {
+    session: usize,
+    /// Heap-allocated; ownership transfers to runtime, which frees after send.
+    text: []const u8,
 };
 
 pub const ReorderMove = struct {

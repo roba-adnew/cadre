@@ -195,18 +195,34 @@ pub fn scaledFontSize(points: c_int, scale: f32) c_int {
     return @max(1, @as(c_int, @intFromFloat(scaled)));
 }
 
+/// Grid-tile winsize after giving up `reserve_px` at the bottom (the composer's
+/// strip on Claude tiles), in whole cell rows, keeping at least one row.
+pub fn reservedGridSize(grid: TerminalSize, reserve_px: c_int) pty_mod.winsize {
+    var size = pty_mod.winsize{
+        .ws_row = grid.rows,
+        .ws_col = grid.cols,
+        .ws_xpixel = grid.width_px,
+        .ws_ypixel = grid.height_px,
+    };
+    if (reserve_px <= 0 or grid.rows == 0) return size;
+    const cell_h: c_int = @divFloor(@as(c_int, grid.height_px), @as(c_int, grid.rows));
+    if (cell_h <= 0) return size;
+    const lost: c_int = @divFloor(reserve_px + cell_h - 1, cell_h);
+    const kept: c_int = @max(1, @as(c_int, grid.rows) - lost);
+    size.ws_row = @intCast(kept);
+    size.ws_ypixel = @intCast(kept * cell_h);
+    return size;
+}
+
+/// `grid_reserve_px[i]` (when present) is taken off the bottom of session i's
+/// grid size; sessions in `full_set` use the full size unchanged.
 pub fn applyTerminalResize(
     sessions: []const *SessionState,
     allocator: std.mem.Allocator,
     sizes: Sizes,
     full_set: FullSet,
+    grid_reserve_px: []const c_int,
 ) bool {
-    const grid_size = pty_mod.winsize{
-        .ws_row = sizes.grid.rows,
-        .ws_col = sizes.grid.cols,
-        .ws_xpixel = sizes.grid.width_px,
-        .ws_ypixel = sizes.grid.height_px,
-    };
     const full_size = pty_mod.winsize{
         .ws_row = sizes.full.rows,
         .ws_col = sizes.full.cols,
@@ -216,7 +232,8 @@ pub fn applyTerminalResize(
 
     var terminal_resized = false;
     for (sessions, 0..) |session, idx| {
-        const target = if (full_set.contains(idx)) full_size else grid_size;
+        const reserve: c_int = if (idx < grid_reserve_px.len) grid_reserve_px[idx] else 0;
+        const target = if (full_set.contains(idx)) full_size else reservedGridSize(sizes.grid, reserve);
         if (!session.spawned) {
             session.pty_size = target;
             continue;
@@ -380,4 +397,15 @@ test "terminal resize clears semantic prompt when shell redraws prompt" {
     const after = try terminal.plainString(allocator);
     defer allocator.free(after);
     try std.testing.expectEqualStrings("ABCDE", after);
+}
+
+test "reservedGridSize gives up whole rows for the reserve, keeping at least one" {
+    const grid = TerminalSize{ .cols = 80, .rows = 30, .width_px = 640, .height_px = 480 }; // 16px rows
+    const none = reservedGridSize(grid, 0);
+    try std.testing.expectEqual(@as(u16, 30), none.ws_row);
+    const strip = reservedGridSize(grid, 36); // 36px -> 3 rows
+    try std.testing.expectEqual(@as(u16, 27), strip.ws_row);
+    try std.testing.expectEqual(@as(u16, 27 * 16), strip.ws_ypixel);
+    try std.testing.expectEqual(@as(u16, 80), strip.ws_col);
+    try std.testing.expectEqual(@as(u16, 1), reservedGridSize(grid, 10_000).ws_row);
 }

@@ -1475,6 +1475,7 @@ const App = struct {
 
         // Renderer-bound state must die while the source renderer is alive.
         carryViewState(&src.session_interaction_component.viewSlice()[src_idx], &dst.session_interaction_component.viewSlice()[plan.slot_index]);
+        dst.restoreComposerDraft(dst.sessions[plan.slot_index]);
         dropCacheEntry(&src.render_cache, src_idx);
         dropCacheEntry(&dst.render_cache, plan.slot_index);
 
@@ -1864,12 +1865,14 @@ fn transferSlot(src: []*SessionState, src_idx: usize, dst: []*SessionState, dst_
 fn carryViewState(src: *SessionViewState, dst: *SessionViewState) void {
     const status = src.status;
     const claude_seen = src.claude_seen;
+    const approval_pending = src.approval_pending;
     const attention = src.attention;
     const hosting = src.hosting;
     src.reset();
     dst.reset();
     dst.status = status;
     dst.claude_seen = claude_seen;
+    dst.approval_pending = approval_pending;
     dst.attention = attention;
     dst.hosting = hosting;
 }
@@ -1956,6 +1959,9 @@ const Window = struct {
     pending_comment_send: ?PendingCommentSend,
     hosting_last_poll_ms: ?i64,
     hosting_flags: []bool,
+    /// Per-slot pixels the composer claims at the bottom of each grid tile
+    /// (`ComposerComponent.gridReservePx`), taken off that tile's PTY rows.
+    grid_reserve_px: []c_int,
     last_render_ns: i128,
     /// Per-frame: an SDL event reached this window this frame.
     processed_event: bool,
@@ -1974,6 +1980,10 @@ const Window = struct {
     diff_overlay_component: *ui_mod.diff_overlay.DiffOverlayComponent,
     reader_overlay_component: *ui_mod.reader_overlay.ReaderOverlayComponent,
     story_overlay_component: *ui_mod.story_overlay.StoryOverlayComponent,
+    composer_component: *ui_mod.composer.ComposerComponent,
+    /// Render pixels the composer reserves at the bottom of the full view; the
+    /// focused PTY gets the rows above it (0 while the composer is hidden).
+    composer_height: c_int,
 
     /// Order: SDL window -> renderer -> fonts -> sizes -> sessions -> restore ->
     /// caches -> UI. Mirrors the pre-extraction init sequence of run().
@@ -2030,6 +2040,7 @@ const Window = struct {
         platform.startTextInput(self.pw.window);
         errdefer platform.stopTextInput(self.pw.window);
         self.text_input_active = true;
+        self.composer_height = 0;
 
         self.font_size = persistence.font_size;
         self.window_focused = true;
@@ -2221,6 +2232,9 @@ const Window = struct {
         self.hosting_last_poll_ms = null;
         self.hosting_flags = try allocator.alloc(bool, sessions.len);
         errdefer allocator.free(self.hosting_flags);
+        self.grid_reserve_px = try allocator.alloc(c_int, sessions.len);
+        errdefer allocator.free(self.grid_reserve_px);
+        @memset(self.grid_reserve_px, 0);
         self.last_render_ns = 0;
         self.processed_event = false;
         self.any_session_dirty = false;
@@ -2326,6 +2340,10 @@ const Window = struct {
         try self.ui.register(self.reader_overlay_component.asComponent());
         self.story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
         try self.ui.register(self.story_overlay_component.asComponent());
+        self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
+        cwd_bar_component.composer = self.composer_component;
+        for (sessions) |session| self.restoreComposerDraft(session);
+        try self.ui.register(self.composer_component.asComponent());
 
         return self;
     }
@@ -2335,6 +2353,7 @@ const Window = struct {
     fn destroy(self: *Window) void {
         const allocator = self.app.allocator;
         allocator.free(self.hosting_flags);
+        allocator.free(self.grid_reserve_px);
         self.render_cache.deinit();
         allocator.free(self.session_ui_info);
         self.ui.deinit(self.pw.renderer);
@@ -2354,7 +2373,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     fn applyTerminalLayoutIfSizeChanged(self: *Window) bool {
@@ -2362,7 +2381,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        return layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        return layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -2370,7 +2389,43 @@ const Window = struct {
     /// stable dims across view-mode toggles; full_size uses the raw render height.
     fn computeTerminalSizes(self: *Window) layout.Sizes {
         const grid_render_height = adjustedRenderHeightForMode(.Grid, self.render_height, self.ui_scale, self.grid.rows);
-        return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, self.render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+        const full_render_height = @max(0, self.render_height - self.composer_height);
+        return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+    }
+
+    /// Re-read each tile's composer reserve; true when any changed (a Claude
+    /// started/stopped, focus moved, the focused box grew), so the caller
+    /// re-sizes the affected PTYs.
+    fn refreshGridReserves(self: *Window, host: *const ui_mod.UiHost) bool {
+        var changed = false;
+        for (self.grid_reserve_px, 0..) |*slot, i| {
+            const px = self.composer_component.gridReservePx(host, i);
+            if (px != slot.*) {
+                slot.* = px;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /// Pick up a terminal's unsent composer draft from its tmux session (left
+    /// there by an earlier run, see tmux.setComposerDraft).
+    fn restoreComposerDraft(self: *Window, session: *SessionState) void {
+        if (!session.spawned or !session.tmux_backed) return;
+        const draft = tmux.getComposerDraft(self.app.allocator, session.persist_index) orelse return;
+        defer self.app.allocator.free(draft);
+        log.info("restored composer draft for terminal {d} ({d} bytes)", .{ session.persist_index, draft.len });
+        self.composer_component.seedDraft(session.persist_index, draft);
+    }
+
+    /// An overlay that types into its own field is open (it needs SDL text
+    /// input, which the composer otherwise holds off while focused).
+    fn textEntryOpen(self: *const Window) bool {
+        return self.find_bar_comp_ptr.open or
+            self.hidden_switcher_comp_ptr.open or
+            self.context_menu_component.open or
+            self.worktree_comp_ptr.overlay.state != .Closed or
+            self.recent_folders_comp_ptr.overlay.state != .Closed;
     }
 
     fn handleExternalSpawnRequest(self: *Window, pending: *control.PendingSpawn, now: i64) void {
@@ -2729,7 +2784,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     fn handleQuitRequest(self: *Window) bool {
@@ -3751,7 +3806,7 @@ const Window = struct {
         }
 
         const focused_has_foreground_process = self.foreground_cache.get(now, self.anim_state.focused_session, sessions);
-        const ui_update_host = ui_host.makeUiHost(
+        var ui_update_host = ui_host.makeUiHost(
             now,
             self.render_width,
             self.render_height,
@@ -3772,6 +3827,7 @@ const Window = struct {
             focused_has_foreground_process,
             &app.theme,
         );
+        ui_update_host.text_entry_open = self.textEntryOpen();
         self.ui.update(&ui_update_host);
 
         ui_action_loop: while (self.ui.popAction()) |action| switch (action) {
@@ -4220,7 +4276,49 @@ const Window = struct {
                 }
                 allocator.free(story_action.path);
             },
+            .ComposerSubmit => |submit| {
+                defer allocator.free(submit.text);
+                if (submit.session >= sessions.len) continue;
+                const target = sessions[submit.session];
+                if (!target.spawned or target.dead) continue;
+                // The box follows Claude's title, which a crashed Claude leaves up;
+                // pasting + Return into the shell would run the text as a command.
+                if (target.agentInForeground()) |agent_running| {
+                    if (!agent_running) {
+                        log.info("composer submit refused: no agent in session {d}'s foreground", .{submit.session});
+                        target.claude_title_live = false; // hides the box (its draft keeps the text)
+                        self.composer_component.returnText(target.persist_index, submit.text);
+                        if (target.tmux_backed) tmux.setComposerDraft(allocator, target.persist_index, submit.text);
+                        self.ui.showToast("Claude isn't running here \u{2014} kept your text", now);
+                        continue;
+                    }
+                } else {
+                    log.warn("composer submit: couldn't confirm an agent in session {d}; sending anyway", .{submit.session});
+                }
+                // One bracketed paste (the program sees it as pasted, not typed),
+                // then the same Return a key press would send.
+                terminal_actions.pasteText(target, allocator, submit.text, self.session_interaction_component) catch |err| {
+                    log.warn("composer paste failed: {}", .{err});
+                    continue;
+                };
+                input_keys.handleKeyInput(target, c.SDLK_RETURN, 0) catch |err| {
+                    log.warn("composer submit failed: {}", .{err});
+                };
+            },
+            .SaveComposerDraft => |draft| {
+                defer allocator.free(draft.text);
+                for (sessions) |session| {
+                    if (session.persist_index != draft.persist_index) continue;
+                    if (session.spawned and session.tmux_backed) tmux.setComposerDraft(allocator, draft.persist_index, draft.text);
+                    break;
+                }
+            },
+            .SetComposerHeight => |height| {
+                self.composer_height = height;
+                self.applyTerminalLayout();
+            },
         };
+        if (self.refreshGridReserves(&ui_update_host)) self.applyTerminalLayout();
 
         if (self.anim_state.mode == .Expanding or self.anim_state.mode == .Collapsing or
             self.anim_state.mode == .PanningLeft or self.anim_state.mode == .PanningRight or

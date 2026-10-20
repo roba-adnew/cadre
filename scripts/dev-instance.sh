@@ -47,7 +47,8 @@ fi
 echo "==> Launching ISOLATED dev instance"
 echo "    config dir: $dev_config  (separate from your daily ~/.config/cadre)"
 echo "    It runs alongside your daily Cadre and will NOT touch its agents."
-CADRE_CONFIG_DIR="$dev_config" nohup zig-out/bin/cadre >/tmp/cadre-dev.log 2>&1 &
+# Absolute path so the pkill above (which matches "$ROOT/zig-out/bin/cadre") finds it next time.
+CADRE_CONFIG_DIR="$dev_config" nohup "$ROOT/zig-out/bin/cadre" >/tmp/cadre-dev.log 2>&1 &
 disown
 sleep 1
 echo "==> Dev instance launched (logs: /tmp/cadre-dev.log)."

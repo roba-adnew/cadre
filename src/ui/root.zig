@@ -69,6 +69,20 @@ pub const UiRoot = struct {
         return false;
     }
 
+    /// Like `hitTest`, but only components stacked strictly above `z`. Lets a
+    /// native (AppKit) view, which always draws over the SDL scene, find out an
+    /// SDL overlay is open on top of it.
+    pub fn hitTestAbove(self: *UiRoot, z: i32, host: *const types.UiHost, x: c_int, y: c_int) bool {
+        if (x < 0 or y < 0) return false;
+        for (self.components.items) |comp| {
+            if (comp.z_index <= z) continue;
+            if (comp.vtable.hitTest) |hit_fn| {
+                if (hit_fn(comp.ptr, host, x, y)) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn update(self: *UiRoot, host: *const types.UiHost) void {
         for (self.components.items) |comp| {
             if (comp.vtable.update) |update_fn| {
