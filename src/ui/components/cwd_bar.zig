@@ -31,8 +31,8 @@ pub const CwdBarComponent = struct {
     font_generation: u64 = 0,
     session_caches: []SessionCache = &.{},
     max_sessions: usize = 0,
-    /// When the composer sits on the focused grid tile, that tile's bar is
-    /// drawn directly above the box instead of at the tile's bottom edge.
+    /// Claude tiles reserve a strip at the bottom for the composer; their bar
+    /// is drawn directly above it instead of at the tile's bottom edge.
     composer: ?*const ComposerComponent = null,
 
     const SessionCache = struct {
@@ -162,10 +162,8 @@ pub const CwdBarComponent = struct {
             .w = rect.w - border_thickness * 2,
             .h = bar_height,
         };
-        if (grid_index == host.focused_session) {
-            if (self.composer) |comp| {
-                if (comp.gridOverlay()) |box| bar_rect.y = box.y - bar_height;
-            }
+        if (self.composer) |comp| {
+            if (grid_index) |i| bar_rect.y -= comp.gridReservePx(host, i);
         }
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);

@@ -1957,6 +1957,9 @@ const Window = struct {
     pending_comment_send: ?PendingCommentSend,
     hosting_last_poll_ms: ?i64,
     hosting_flags: []bool,
+    /// Per-slot pixels the composer claims at the bottom of each grid tile
+    /// (`ComposerComponent.gridReservePx`), taken off that tile's PTY rows.
+    grid_reserve_px: []c_int,
     last_render_ns: i128,
     /// Per-frame: an SDL event reached this window this frame.
     processed_event: bool,
@@ -2227,6 +2230,9 @@ const Window = struct {
         self.hosting_last_poll_ms = null;
         self.hosting_flags = try allocator.alloc(bool, sessions.len);
         errdefer allocator.free(self.hosting_flags);
+        self.grid_reserve_px = try allocator.alloc(c_int, sessions.len);
+        errdefer allocator.free(self.grid_reserve_px);
+        @memset(self.grid_reserve_px, 0);
         self.last_render_ns = 0;
         self.processed_event = false;
         self.any_session_dirty = false;
@@ -2344,6 +2350,7 @@ const Window = struct {
     fn destroy(self: *Window) void {
         const allocator = self.app.allocator;
         allocator.free(self.hosting_flags);
+        allocator.free(self.grid_reserve_px);
         self.render_cache.deinit();
         allocator.free(self.session_ui_info);
         self.ui.deinit(self.pw.renderer);
@@ -2363,7 +2370,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     fn applyTerminalLayoutIfSizeChanged(self: *Window) bool {
@@ -2371,7 +2378,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        return layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        return layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     /// Computes both terminal sizes from the raw render dimensions. grid_size
@@ -2381,6 +2388,21 @@ const Window = struct {
         const grid_render_height = adjustedRenderHeightForMode(.Grid, self.render_height, self.ui_scale, self.grid.rows);
         const full_render_height = @max(0, self.render_height - self.composer_height);
         return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+    }
+
+    /// Re-read each tile's composer reserve; true when any changed (a Claude
+    /// started/stopped, focus moved, the focused box grew), so the caller
+    /// re-sizes the affected PTYs.
+    fn refreshGridReserves(self: *Window, host: *const ui_mod.UiHost) bool {
+        var changed = false;
+        for (self.grid_reserve_px, 0..) |*slot, i| {
+            const px = self.composer_component.gridReservePx(host, i);
+            if (px != slot.*) {
+                slot.* = px;
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /// An overlay that types into its own field is open (it needs SDL text
@@ -2749,7 +2771,7 @@ const Window = struct {
         self.full_cols = sizes.full.cols;
         self.full_rows = sizes.full.rows;
         const full_set = fullSetForMode(self.anim_state.mode, self.anim_state.focused_session, self.anim_state.previous_session);
-        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set);
+        _ = layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
     fn handleQuitRequest(self: *Window) bool {
@@ -4275,6 +4297,7 @@ const Window = struct {
                 self.applyTerminalLayout();
             },
         };
+        if (self.refreshGridReserves(&ui_update_host)) self.applyTerminalLayout();
 
         if (self.anim_state.mode == .Expanding or self.anim_state.mode == .Collapsing or
             self.anim_state.mode == .PanningLeft or self.anim_state.mode == .PanningRight or

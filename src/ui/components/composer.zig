@@ -84,7 +84,7 @@ pub fn shouldShow(host: *const types.UiHost) bool {
 /// and the id line with room to spare.
 pub fn dockArea(host: *const types.UiHost) ?Rect {
     if (host.view_mode != .Grid) return .{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
-    if (host.grid_cols == 0) return null;
+    if (host.grid_cols == 0 or !tileFitsBox(host)) return null;
     const row: c_int = @intCast(host.focused_session / host.grid_cols);
     const col: c_int = @intCast(host.focused_session % host.grid_cols);
     const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
@@ -95,8 +95,44 @@ pub fn dockArea(host: *const types.UiHost) ?Rect {
         .w = host.cell_w - border * 2,
         .h = host.cell_h - border * 2,
     };
-    if (area.w <= 0 or area.h < dpi.scale(min_height_pt, host.ui_scale) * 3 + bar) return null;
+    _ = bar;
     return area;
+}
+
+/// Grid tiles all share one size; a box (plus the id line above it and a few
+/// terminal rows) only makes sense when a tile has room for it.
+fn tileFitsBox(host: *const types.UiHost) bool {
+    const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+    const bar = dpi.scale(cwd_bar_metrics.height, host.ui_scale);
+    return host.cell_w - border * 2 > 0 and
+        host.cell_h - border * 2 >= dpi.scale(min_height_pt, host.ui_scale) * 3 + bar;
+}
+
+pub const LiveBox = struct { session: usize, h: c_int };
+
+/// See `ComposerComponent.gridReservePx`; `live` is the box currently up on a
+/// grid tile, if any.
+pub fn tileReservePx(host: *const types.UiHost, i: usize, live: ?LiveBox) c_int {
+    if (i >= host.sessions.len) return 0;
+    const info = host.sessions[i];
+    if (!info.spawned or info.dead or !info.claude_live or !tileFitsBox(host)) return 0;
+    if (live) |box| {
+        if (box.session == i) return box.h;
+    }
+    return dpi.scale(min_height_pt, host.ui_scale);
+}
+
+/// Bottom strip of grid tile `i` with height `h` (inside the tile border).
+fn tileStrip(host: *const types.UiHost, i: usize, h: c_int) Rect {
+    const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+    const row: c_int = @intCast(i / host.grid_cols);
+    const col: c_int = @intCast(i % host.grid_cols);
+    return .{
+        .x = col * host.cell_w + border,
+        .y = row * host.cell_h + host.cell_h - border - h,
+        .w = host.cell_w - border * 2,
+        .h = h,
+    };
 }
 
 /// Box docked to the bottom of `area`, tall enough for `content_h` (render
@@ -279,14 +315,8 @@ pub const ComposerComponent = struct {
         self.pruneDrafts(host);
         const area = dockArea(host);
         var rect = if (area) |a| composerRect(a, self.content_h, host.ui_scale) else self.rect;
-        // In the grid the box overlays the tile's bottom rows (Claude's own
-        // prompt and status) instead of shrinking its PTY, which would redraw
-        // two agents on every tile switch. So it steps aside while Claude is
-        // asking something and the box is empty, leaving the question visible.
         const in_grid = host.view_mode == .Grid;
-        const asking = in_grid and host.focused_session < host.sessions.len and
-            host.sessions[host.focused_session].approval_pending and view.textLength() == 0;
-        const show = area != null and shouldShow(host) and !asking and !self.covered(host, rect);
+        const show = area != null and shouldShow(host) and !self.covered(host, rect);
 
         if (show and self.visible and host.focused_session != self.session) {
             // Pane switched while the box stays up (grid tile or full view): swap drafts.
@@ -323,7 +353,8 @@ pub const ComposerComponent = struct {
         self.rect = rect;
 
         self.in_grid = in_grid;
-        // Only full view shrinks the PTY; the grid box overlays its tile.
+        // Full view: the runtime shrinks the focused PTY by this. Grid tiles
+        // are sized from `gridReservePx` instead.
         const reserve: c_int = if (self.visible and !in_grid) rect.h else 0;
         if (reserve != self.reported_h) {
             out.append(.{ .SetComposerHeight = reserve }) catch |err| {
@@ -447,21 +478,44 @@ pub const ComposerComponent = struct {
         );
     }
 
-    /// The box's rect while it sits on a grid tile, for cwd_bar.zig to stack
-    /// that tile's id line directly above it.
-    pub fn gridOverlay(self: *const ComposerComponent) ?Rect {
-        return if (self.visible and self.in_grid) self.rect else null;
+    /// Pixels claimed at the bottom of grid tile `i`, which its PTY gives up
+    /// (layout.reservedGridSize) and cwd_bar.zig stacks the id line above: the
+    /// live box on the focused tile, a one-line strip on every other Claude tile
+    /// so moving focus never resizes a terminal, nothing on shell tiles or
+    /// tiles too small for a box.
+    pub fn gridReservePx(self: *const ComposerComponent, host: *const types.UiHost, i: usize) c_int {
+        if (self.view == null) return 0;
+        const live: ?LiveBox = if (self.visible and self.in_grid) .{ .session = self.session, .h = self.rect.h } else null;
+        return tileReservePx(host, i, live);
     }
 
     fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
+        const line = host.theme.chromeBorder();
+        // Unfocused Claude tiles show an empty strip where their box goes; a
+        // click there focuses the tile and the live box moves in.
+        if (host.view_mode == .Grid) {
+            const fill = host.theme.surface(1);
+            for (host.sessions, 0..) |_, i| {
+                if (self.visible and i == self.session) continue;
+                const h = self.gridReservePx(host, i);
+                if (h <= 0) continue;
+                const strip = tileStrip(host, i, h);
+                _ = c.SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
+                _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(strip.x), .y = @floatFromInt(strip.y), .w = @floatFromInt(strip.w), .h = @floatFromInt(strip.h) });
+                drawHairline(renderer, line, strip);
+            }
+        }
         if (!self.visible) return;
         // Hairline over the box; the box itself is the native view.
-        const line = host.theme.chromeBorder();
-        _ = c.SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, 255);
-        const y: f32 = @floatFromInt(self.rect.y - 1);
-        _ = c.SDL_RenderLine(renderer, @floatFromInt(self.rect.x), y, @floatFromInt(self.rect.x + self.rect.w), y);
+        drawHairline(renderer, line, self.rect);
         self.first_frame.markDrawn();
+    }
+
+    fn drawHairline(renderer: *c.SDL_Renderer, color: c.SDL_Color, rect: Rect) void {
+        _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+        const y: f32 = @floatFromInt(rect.y - 1);
+        _ = c.SDL_RenderLine(renderer, @floatFromInt(rect.x), y, @floatFromInt(rect.x + rect.w), y);
     }
 
     fn hitTestFn(ptr: *anyopaque, _: *const types.UiHost, x: c_int, y: c_int) bool {
@@ -564,6 +618,25 @@ test "dockArea is the whole window in full view, the focused tile above its cwd 
     try testing.expectEqual(@as(c_int, 400 + border), tile.x);
     try testing.expectEqual(@as(c_int, 400 - border * 2), tile.w);
     try testing.expectEqual(@as(c_int, 600 - border * 2), tile.h); // box at the very bottom, id line above it
+}
+
+test "tileReservePx: live box on its tile, a strip on other Claude tiles, nothing on shells" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true },
+        .{ .dead = false, .spawned = true, .claude_live = true },
+        .{ .dead = false, .spawned = true },
+    };
+    var host = testHost(&sessions);
+    host.view_mode = .Grid;
+    host.grid_cols = 3;
+    host.cell_w = 260;
+    const live = LiveBox{ .session = 0, .h = 80 }; // the live box is up on tile 0
+    try testing.expectEqual(@as(c_int, 80), tileReservePx(&host, 0, live));
+    try testing.expectEqual(@as(c_int, min_height_pt), tileReservePx(&host, 1, live));
+    try testing.expectEqual(@as(c_int, min_height_pt), tileReservePx(&host, 0, null)); // box hidden: keep the strip
+    try testing.expectEqual(@as(c_int, 0), tileReservePx(&host, 2, live)); // shell tile
+    host.cell_h = 90; // too small for a box
+    try testing.expectEqual(@as(c_int, 0), tileReservePx(&host, 1, live));
 
     host.cell_h = 90; // too short for the box plus a usable terminal
     try testing.expect(dockArea(&host) == null);
