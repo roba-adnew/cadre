@@ -3792,6 +3792,7 @@ const Window = struct {
             &app.theme,
         );
         ui_update_host.text_entry_open = self.textEntryOpen();
+        ui_update_host.tile_drag_active = self.session_interaction_component.isReordering();
         self.ui.update(&ui_update_host);
 
         ui_action_loop: while (self.ui.popAction()) |action| switch (action) {

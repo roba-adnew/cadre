@@ -19,6 +19,8 @@ const UiComponent = @import("../component.zig").UiComponent;
 const UiRoot = @import("../root.zig").UiRoot;
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const view_mod = @import("composer_view.zig");
+const renderer_mod = @import("../../render/renderer.zig");
+const cwd_bar_metrics = @import("cwd_bar_metrics.zig");
 
 const log = std.log.scoped(.composer);
 
@@ -66,21 +68,43 @@ pub fn routeKeyDown(key: c.SDL_Keycode, mod: c.SDL_Keymod, has_text: bool, compo
     };
 }
 
-/// Shown for the focused pane in steady full view while Claude runs in it.
+/// Shown for the focused pane while Claude runs in it: in steady full view,
+/// or on the focused grid tile (not while a tile is being dragged).
 pub fn shouldShow(host: *const types.UiHost) bool {
-    if (host.view_mode != .Full) return false;
+    if (host.view_mode != .Full and host.view_mode != .Grid) return false;
+    if (host.view_mode == .Grid and host.tile_drag_active) return false;
     if (host.focused_session >= host.sessions.len) return false;
     const info = host.sessions[host.focused_session];
     return info.spawned and !info.dead and info.claude_live;
 }
 
-/// Bottom-docked box tall enough for `content_h` (render px), between one line
-/// and 40% of the window; past that the text scrolls inside the box.
-pub fn composerRect(window_w: c_int, window_h: c_int, content_h: c_int, ui_scale: f32) Rect {
+/// Where the box docks: the whole window in full view, or the focused grid
+/// tile above its cwd bar (same tile geometry as cwd_bar.zig). Null when the
+/// tile is too small to hold the box with room to spare.
+pub fn dockArea(host: *const types.UiHost) ?Rect {
+    if (host.view_mode != .Grid) return .{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
+    if (host.grid_cols == 0) return null;
+    const row: c_int = @intCast(host.focused_session / host.grid_cols);
+    const col: c_int = @intCast(host.focused_session % host.grid_cols);
+    const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+    const bar = dpi.scale(cwd_bar_metrics.height, host.ui_scale);
+    const area = Rect{
+        .x = col * host.cell_w + border,
+        .y = row * host.cell_h + border,
+        .w = host.cell_w - border * 2,
+        .h = host.cell_h - bar - border * 2,
+    };
+    if (area.w <= 0 or area.h < dpi.scale(min_height_pt, host.ui_scale) * 3) return null;
+    return area;
+}
+
+/// Box docked to the bottom of `area`, tall enough for `content_h` (render
+/// px), between one line and 40% of the area; past that the text scrolls.
+pub fn composerRect(area: Rect, content_h: c_int, ui_scale: f32) Rect {
     const min_h = dpi.scale(min_height_pt, ui_scale);
-    const max_h = @max(min_h, @divFloor(window_h * 2, 5));
+    const max_h = @max(min_h, @divFloor(area.h * 2, 5));
     const h = std.math.clamp(content_h, min_h, max_h);
-    return .{ .x = 0, .y = window_h - h, .w = window_w, .h = h };
+    return .{ .x = area.x, .y = area.y + area.h - h, .w = area.w, .h = h };
 }
 
 /// Text to send, or null when there is nothing but whitespace. Unicode line and
@@ -250,11 +274,19 @@ pub const ComposerComponent = struct {
         const view = &(self.view orelse return);
 
         self.pruneDrafts(host);
-        var rect = composerRect(host.window_w, host.window_h, self.content_h, host.ui_scale);
-        const show = shouldShow(host) and !self.covered(host, rect);
+        const area = dockArea(host);
+        var rect = if (area) |a| composerRect(a, self.content_h, host.ui_scale) else self.rect;
+        // In the grid the box overlays the tile's bottom rows (Claude's own
+        // prompt and status) instead of shrinking its PTY, which would redraw
+        // two agents on every tile switch. So it steps aside while Claude is
+        // asking something and the box is empty, leaving the question visible.
+        const in_grid = host.view_mode == .Grid;
+        const asking = in_grid and host.focused_session < host.sessions.len and
+            host.sessions[host.focused_session].approval_pending and view.textLength() == 0;
+        const show = area != null and shouldShow(host) and !asking and !self.covered(host, rect);
 
         if (show and self.visible and host.focused_session != self.session) {
-            // Pane switched without leaving full view: swap drafts.
+            // Pane switched while the box stays up (grid tile or full view): swap drafts.
             self.saveDraft(view);
             self.bindSession(view, host);
             self.focusComposer(view);
@@ -282,12 +314,13 @@ pub const ComposerComponent = struct {
             self.syncFocus(view, host);
             view.setFrame(rect, host.window_w, host.window_h);
             self.content_h = view.contentHeightPx(host.window_h);
-            rect = composerRect(host.window_w, host.window_h, self.content_h, host.ui_scale);
+            if (area) |a| rect = composerRect(a, self.content_h, host.ui_scale);
             view.setFrame(rect, host.window_w, host.window_h);
         }
         self.rect = rect;
 
-        const reserve: c_int = if (self.visible) rect.h else 0;
+        // Only full view shrinks the PTY; the grid box overlays its tile.
+        const reserve: c_int = if (self.visible and !in_grid) rect.h else 0;
         if (reserve != self.reported_h) {
             out.append(.{ .SetComposerHeight = reserve }) catch |err| {
                 log.warn("failed to queue composer height: {}", .{err});
@@ -417,7 +450,7 @@ pub const ComposerComponent = struct {
         const line = host.theme.chromeBorder();
         _ = c.SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, 255);
         const y: f32 = @floatFromInt(self.rect.y - 1);
-        _ = c.SDL_RenderLine(renderer, 0, y, @floatFromInt(self.rect.w), y);
+        _ = c.SDL_RenderLine(renderer, @floatFromInt(self.rect.x), y, @floatFromInt(self.rect.x + self.rect.w), y);
         self.first_frame.markDrawn();
     }
 
@@ -469,14 +502,61 @@ test "routeKeyDown: Claude's control keys pass through" {
     try testing.expectEqual(Route.terminal, routeKeyDown(c.SDLK_LEFT, c.SDL_KMOD_SHIFT, false, false)); // pane nav when empty
 }
 
-test "composerRect grows with content between one line and 40% of the window" {
-    const small = composerRect(800, 1000, 0, 1.0);
+test "composerRect grows with content between one line and 40% of its area" {
+    const window = Rect{ .x = 0, .y = 0, .w = 800, .h = 1000 };
+    const small = composerRect(window, 0, 1.0);
     try testing.expectEqual(@as(c_int, min_height_pt), small.h);
     try testing.expectEqual(@as(c_int, 1000 - min_height_pt), small.y);
-    try testing.expectEqual(@as(c_int, 120), composerRect(800, 1000, 120, 1.0).h);
-    const tall = composerRect(800, 1000, 900, 1.0);
+    try testing.expectEqual(@as(c_int, 120), composerRect(window, 120, 1.0).h);
+    const tall = composerRect(window, 900, 1.0);
     try testing.expectEqual(@as(c_int, 400), tall.h);
     try testing.expectEqual(@as(c_int, 600), tall.y);
+    // A grid tile: docked to the tile's own bottom edge, tile width.
+    const tile = Rect{ .x = 400, .y = 300, .w = 390, .h = 260 };
+    const in_tile = composerRect(tile, 0, 1.0);
+    try testing.expectEqual(@as(c_int, 400), in_tile.x);
+    try testing.expectEqual(@as(c_int, 390), in_tile.w);
+    try testing.expectEqual(@as(c_int, 300 + 260 - min_height_pt), in_tile.y);
+}
+
+fn testHost(sessions: []types.SessionUiInfo) types.UiHost {
+    return .{
+        .now_ms = 0,
+        .window_w = 800,
+        .window_h = 600,
+        .ui_scale = 1.0,
+        .grid_cols = 2,
+        .grid_rows = 1,
+        .cell_w = 400,
+        .cell_h = 600,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Full,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = true,
+        .sessions = sessions,
+        .theme = undefined,
+    };
+}
+
+test "dockArea is the whole window in full view, the focused tile above its cwd bar in the grid" {
+    var sessions = [_]types.SessionUiInfo{ .{ .dead = false, .spawned = true }, .{ .dead = false, .spawned = true } };
+    var host = testHost(&sessions);
+    const full = dockArea(&host) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(c_int, 800), full.w);
+    try testing.expectEqual(@as(c_int, 600), full.h);
+
+    host.view_mode = .Grid;
+    host.focused_session = 1;
+    const tile = dockArea(&host) orelse return error.TestUnexpectedResult;
+    const border = renderer_mod.grid_border_thickness;
+    try testing.expectEqual(@as(c_int, 400 + border), tile.x);
+    try testing.expectEqual(@as(c_int, 400 - border * 2), tile.w);
+    try testing.expectEqual(@as(c_int, 600 - cwd_bar_metrics.height - border * 2), tile.h);
+
+    host.cell_h = 90; // too short for the box plus a usable terminal
+    try testing.expect(dockArea(&host) == null);
 }
 
 test "normalizeSubmitText trims trailing blanks and rejects whitespace" {
@@ -486,7 +566,7 @@ test "normalizeSubmitText trims trailing blanks and rejects whitespace" {
     try testing.expect((try normalizeSubmitText(testing.allocator, " \n\t ")) == null);
 }
 
-test "shouldShow only for a live Claude pane in full view" {
+test "shouldShow for a live Claude pane in full view or on its grid tile" {
     var sessions = [_]types.SessionUiInfo{.{ .dead = false, .spawned = true, .claude_live = true }};
     var host = types.UiHost{
         .now_ms = 0,
@@ -508,6 +588,11 @@ test "shouldShow only for a live Claude pane in full view" {
     };
     try testing.expect(shouldShow(&host));
     host.view_mode = .Grid;
+    try testing.expect(shouldShow(&host));
+    host.tile_drag_active = true; // a tile is being dragged: the box would be left behind
+    try testing.expect(!shouldShow(&host));
+    host.tile_drag_active = false;
+    host.view_mode = .Expanding;
     try testing.expect(!shouldShow(&host));
     host.view_mode = .Full;
     sessions[0].claude_live = false;
