@@ -31,8 +31,8 @@ pub const CwdBarComponent = struct {
     font_generation: u64 = 0,
     session_caches: []SessionCache = &.{},
     max_sessions: usize = 0,
-    /// Claude tiles reserve a strip at the bottom for the composer; their bar
-    /// is drawn directly above it instead of at the tile's bottom edge.
+    /// On Claude tiles the id goes at the right end of the composer's row
+    /// (`ComposerComponent.idRow`) instead of in a bar at the tile's bottom.
     composer: ?*const ComposerComponent = null,
 
     const SessionCache = struct {
@@ -41,6 +41,8 @@ pub const CwdBarComponent = struct {
         basename_h: c_int = 0,
         cached_path: ?[]const u8 = null,
         font_size: c_int = 0,
+        /// Width the id took from its row's right end on the last frame.
+        id_w: c_int = 0,
 
         fn deinit(self: *SessionCache, allocator: std.mem.Allocator) void {
             self.invalidate(allocator);
@@ -101,6 +103,12 @@ pub const CwdBarComponent = struct {
         self.max_sessions = count;
     }
 
+    /// Width of session `i`'s id line on the last frame drawn (0 if unknown);
+    /// the composer's box in that tile's row stops short of it.
+    pub fn idWidthPx(self: *const CwdBarComponent, i: usize) c_int {
+        return if (i < self.session_caches.len) self.session_caches[i].id_w else 0;
+    }
+
     fn handleEvent(_: *anyopaque, _: *const types.UiHost, _: *const c.SDL_Event, _: *types.UiActionQueue) bool {
         return false;
     }
@@ -156,26 +164,26 @@ pub const CwdBarComponent = struct {
 
         if (rect.w <= border_thickness * 2 or rect.h <= bar_height + border_thickness) return;
 
-        var bar_rect = Rect{
+        const box_row: ?Rect = if (self.composer) |comp| (if (grid_index) |i| comp.idRow(host, i) else null) else null;
+        const bar_rect = box_row orelse Rect{
             .x = rect.x + border_thickness,
             .y = rect.y + rect.h - bar_height - border_thickness,
             .w = rect.w - border_thickness * 2,
             .h = bar_height,
         };
-        if (self.composer) |comp| {
-            if (grid_index) |i| bar_rect.y -= comp.gridBandPx(host, i);
-        }
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        const panel_fill = host.theme.surface(2);
-        _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 230);
-        const bg_rect = c.SDL_FRect{
-            .x = @floatFromInt(bar_rect.x),
-            .y = @floatFromInt(bar_rect.y),
-            .w = @floatFromInt(bar_rect.w),
-            .h = @floatFromInt(bar_rect.h),
-        };
-        _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+        if (box_row == null) {
+            const panel_fill = host.theme.surface(2);
+            _ = c.SDL_SetRenderDrawColor(renderer, panel_fill.r, panel_fill.g, panel_fill.b, 230);
+            const bg_rect = c.SDL_FRect{
+                .x = @floatFromInt(bar_rect.x),
+                .y = @floatFromInt(bar_rect.y),
+                .w = @floatFromInt(bar_rect.w),
+                .h = @floatFromInt(bar_rect.h),
+            };
+            _ = c.SDL_RenderFillRect(renderer, &bg_rect);
+        }
 
         // Match the terminal text: same typeface (shared font paths) at the grid
         // font's pixel size, clamped so tall fonts still fit inside the bar.
@@ -288,6 +296,7 @@ pub const CwdBarComponent = struct {
         const basename_height_f: f32 = @floatFromInt(text_height);
 
         const basename_x = content_right_edge - basename_width;
+        sc.id_w = bar_rect.x + bar_rect.w - basename_x + padding;
         const text_y = bar_rect.y + @divFloor(bar_rect.h - text_height, 2);
 
         // Clip in case a long folder name at a large font outruns the bar.

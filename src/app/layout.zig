@@ -23,6 +23,9 @@ pub const TerminalSize = struct {
     /// which draw into a small tile rather than the whole window).
     width_px: u16,
     height_px: u16,
+    /// Pixels left under the last row that fit no whole row; a reserve taken
+    /// from the bottom (`reservedGridSize`) uses them before whole rows.
+    spare_h_px: u16 = 0,
 };
 
 pub fn updateRenderSizes(
@@ -135,6 +138,7 @@ fn terminalSizeForCell(window_width: c_int, window_height: c_int, cell_w: c_int,
         .rows = @intCast(rows),
         .width_px = @intCast(cols * cw),
         .height_px = @intCast(rows * ch),
+        .spare_h_px = @intCast(@max(0, usable_h - rows * ch)),
     };
 }
 
@@ -207,8 +211,8 @@ pub fn reservedGridSize(grid: TerminalSize, reserve_px: c_int) pty_mod.winsize {
     if (reserve_px <= 0 or grid.rows == 0) return size;
     const cell_h: c_int = @divFloor(@as(c_int, grid.height_px), @as(c_int, grid.rows));
     if (cell_h <= 0) return size;
-    const lost: c_int = @divFloor(reserve_px + cell_h - 1, cell_h);
-    const kept: c_int = @max(1, @as(c_int, grid.rows) - lost);
+    const avail: c_int = @as(c_int, grid.height_px) + grid.spare_h_px;
+    const kept: c_int = @max(1, @min(@as(c_int, grid.rows), @divFloor(avail - reserve_px, cell_h)));
     size.ws_row = @intCast(kept);
     size.ws_ypixel = @intCast(kept * cell_h);
     return size;
@@ -408,4 +412,9 @@ test "reservedGridSize gives up whole rows for the reserve, keeping at least one
     try std.testing.expectEqual(@as(u16, 27 * 16), strip.ws_ypixel);
     try std.testing.expectEqual(@as(u16, 80), strip.ws_col);
     try std.testing.expectEqual(@as(u16, 1), reservedGridSize(grid, 10_000).ws_row);
+    // Spare pixels under the last row count toward the reserve first.
+    var spare = grid;
+    spare.spare_h_px = 12;
+    try std.testing.expectEqual(@as(u16, 30), reservedGridSize(spare, 10).ws_row);
+    try std.testing.expectEqual(@as(u16, 28), reservedGridSize(spare, 36).ws_row);
 }

@@ -2342,6 +2342,7 @@ const Window = struct {
         try self.ui.register(self.story_overlay_component.asComponent());
         self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
         cwd_bar_component.composer = self.composer_component;
+        self.composer_component.id_line = cwd_bar_component;
         for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
 
