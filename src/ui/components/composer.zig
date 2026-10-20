@@ -78,10 +78,9 @@ pub fn routeKeyDown(key: c.SDL_Keycode, mod: c.SDL_Keymod, has_text: bool, compo
 }
 
 /// Shown for the focused pane while Claude runs in it: in steady full view,
-/// or on the focused grid tile (not while a tile is being dragged).
+/// or on the focused grid tile.
 pub fn shouldShow(host: *const types.UiHost) bool {
     if (host.view_mode != .Full and host.view_mode != .Grid) return false;
-    if (host.view_mode == .Grid and host.tile_drag_active) return false;
     if (host.focused_session >= host.sessions.len) return false;
     const info = host.sessions[host.focused_session];
     return info.spawned and !info.dead and info.claude_live;
@@ -790,9 +789,6 @@ test "shouldShow for a live Claude pane in full view or on its grid tile" {
     try testing.expect(shouldShow(&host));
     host.view_mode = .Grid;
     try testing.expect(shouldShow(&host));
-    host.tile_drag_active = true; // a tile is being dragged: the box would be left behind
-    try testing.expect(!shouldShow(&host));
-    host.tile_drag_active = false;
     host.view_mode = .Expanding;
     try testing.expect(!shouldShow(&host));
     host.view_mode = .Full;

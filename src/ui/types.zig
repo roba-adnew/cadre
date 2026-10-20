@@ -105,9 +105,6 @@ pub const UiHost = struct {
     /// An overlay that types into its own field (find bar, switcher filter, ...)
     /// is open, so the composer hands SDL text input back to it.
     text_entry_open: bool = false,
-    /// A grid tile is being hold-dragged to reorder; the composer hides so it
-    /// isn't left behind over the old slot.
-    tile_drag_active: bool = false,
 };
 
 pub const UiAction = union(enum) {
