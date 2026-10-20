@@ -95,6 +95,10 @@ const AppKitView = struct {
     scroll: Id,
     text: Id,
     delegate: Id,
+    /// The box's own undo history. NSTextView normally borrows its window's
+    /// undo manager, but SDL's window has none, so nothing was ever recorded
+    /// and Cmd+Z did nothing. Handed out by the delegate's undoManagerForTextView:.
+    undo: Id,
     frame: [4]f64 = .{ -1, -1, -1, -1 },
 
     const inset_w: f64 = 12;
@@ -148,8 +152,10 @@ const AppKitView = struct {
         send(void, scroll, "setHidden:", .{true});
         send(void, content, "addSubview:", .{scroll});
 
-        registerView(text, window);
-        return .{ .window = window, .ns_window = ns_window, .scroll = scroll, .text = text, .delegate = delegate };
+        const undo = send(Id, alloc("NSUndoManager"), "init", .{});
+        registerView(text, window, undo);
+        if (send(Id, text, "undoManager", .{}) != undo) log.warn("composer text view isn't using its own undo manager; Cmd+Z won't work", .{});
+        return .{ .window = window, .ns_window = ns_window, .scroll = scroll, .text = text, .delegate = delegate, .undo = undo };
     }
 
     pub fn destroy(self: *AppKitView) void {
@@ -159,6 +165,7 @@ const AppKitView = struct {
         send(void, self.text, "release", .{});
         send(void, self.scroll, "release", .{});
         send(void, self.delegate, "release", .{});
+        send(void, self.undo, "release", .{});
     }
 
     /// Place the box at `rect` (render pixels, top-left origin) over a window
@@ -370,6 +377,7 @@ const AppKitView = struct {
         const new_cls = objc.objc_allocateClassPair(objc.objc_getClass("NSObject"), name, 0) orelse return null;
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textView:doCommandBySelector:"), @ptrCast(&doCommandBySelector), "c@:@:");
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textViewDidChangeSelection:"), @ptrCast(&didChangeSelection), "v@:@");
+        _ = objc.class_addMethod(new_cls, objc.sel_registerName("undoManagerForTextView:"), @ptrCast(&undoManagerForTextView), "@@:@");
         objc.objc_registerClassPair(new_cls);
         return @ptrCast(new_cls);
     }
@@ -409,14 +417,22 @@ const AppKitView = struct {
         if (c.SDL_TextInputActive(window)) _ = c.SDL_StopTextInput(window);
     }
 
-    // Text view -> SDL window, for the delegate callbacks (main thread only).
-    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null };
+    fn undoManagerForTextView(_: Id, _: Id, text_view: Id) callconv(.c) Id {
+        for (registry) |entry| {
+            if (text_view != null and entry.text_view == text_view) return entry.undo;
+        }
+        return null;
+    }
+
+    // Text view -> SDL window and undo manager, for the delegate callbacks
+    // (main thread only).
+    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null, undo: Id = null };
     var registry: [16]Registration = [_]Registration{.{}} ** 16;
 
-    fn registerView(text_view: Id, window: *c.SDL_Window) void {
+    fn registerView(text_view: Id, window: *c.SDL_Window, undo: Id) void {
         for (&registry) |*entry| {
             if (entry.text_view == null) {
-                entry.* = .{ .text_view = text_view, .window = window };
+                entry.* = .{ .text_view = text_view, .window = window, .undo = undo };
                 return;
             }
         }
