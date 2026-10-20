@@ -79,8 +79,9 @@ pub fn shouldShow(host: *const types.UiHost) bool {
 }
 
 /// Where the box docks: the whole window in full view, or the focused grid
-/// tile above its cwd bar (same tile geometry as cwd_bar.zig). Null when the
-/// tile is too small to hold the box with room to spare.
+/// tile (same tile geometry as cwd_bar.zig, which lifts that tile's id line to
+/// sit directly above the box). Null when the tile is too small to hold the box
+/// and the id line with room to spare.
 pub fn dockArea(host: *const types.UiHost) ?Rect {
     if (host.view_mode != .Grid) return .{ .x = 0, .y = 0, .w = host.window_w, .h = host.window_h };
     if (host.grid_cols == 0) return null;
@@ -92,9 +93,9 @@ pub fn dockArea(host: *const types.UiHost) ?Rect {
         .x = col * host.cell_w + border,
         .y = row * host.cell_h + border,
         .w = host.cell_w - border * 2,
-        .h = host.cell_h - bar - border * 2,
+        .h = host.cell_h - border * 2,
     };
-    if (area.w <= 0 or area.h < dpi.scale(min_height_pt, host.ui_scale) * 3) return null;
+    if (area.w <= 0 or area.h < dpi.scale(min_height_pt, host.ui_scale) * 3 + bar) return null;
     return area;
 }
 
@@ -126,6 +127,8 @@ pub const ComposerComponent = struct {
     root: *UiRoot,
     view: ?ComposerView,
     visible: bool = false,
+    /// Showing on a grid tile (vs full view); see `gridOverlay`.
+    in_grid: bool = false,
     /// The composer should hold the keyboard (vs the terminal).
     want_focus: bool = false,
     /// Keyboard handed to the terminal for a permission prompt or a text-entry
@@ -319,6 +322,7 @@ pub const ComposerComponent = struct {
         }
         self.rect = rect;
 
+        self.in_grid = in_grid;
         // Only full view shrinks the PTY; the grid box overlays its tile.
         const reserve: c_int = if (self.visible and !in_grid) rect.h else 0;
         if (reserve != self.reported_h) {
@@ -443,6 +447,12 @@ pub const ComposerComponent = struct {
         );
     }
 
+    /// The box's rect while it sits on a grid tile, for cwd_bar.zig to stack
+    /// that tile's id line directly above it.
+    pub fn gridOverlay(self: *const ComposerComponent) ?Rect {
+        return if (self.visible and self.in_grid) self.rect else null;
+    }
+
     fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
         if (!self.visible) return;
@@ -553,7 +563,7 @@ test "dockArea is the whole window in full view, the focused tile above its cwd 
     const border = renderer_mod.grid_border_thickness;
     try testing.expectEqual(@as(c_int, 400 + border), tile.x);
     try testing.expectEqual(@as(c_int, 400 - border * 2), tile.w);
-    try testing.expectEqual(@as(c_int, 600 - cwd_bar_metrics.height - border * 2), tile.h);
+    try testing.expectEqual(@as(c_int, 600 - border * 2), tile.h); // box at the very bottom, id line above it
 
     host.cell_h = 90; // too short for the box plus a usable terminal
     try testing.expect(dockArea(&host) == null);
