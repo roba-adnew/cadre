@@ -162,6 +162,10 @@ pub const SessionState = struct {
     /// stripped) — e.g. the name from `/rename`, or the auto-generated summary.
     /// Null until a Claude title is seen. Owned; freed in teardown.
     title: ?[]const u8 = null,
+    /// The terminal's current title is Claude Code's (see `osc_title.isClaudeTitle`),
+    /// i.e. Claude is running in this pane right now. Unlike `title`, this drops
+    /// back to false when the shell retitles the pane after Claude exits.
+    claude_title_live: bool = false,
     /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
@@ -405,6 +409,7 @@ pub const SessionState = struct {
             allocator.free(t);
             self.title = null;
         }
+        self.claude_title_live = false;
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -591,6 +596,7 @@ pub const SessionState = struct {
             self.allocator.free(t);
             self.title = null;
         }
+        self.claude_title_live = false;
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -705,6 +711,7 @@ pub const SessionState = struct {
                 self.agent_icon = kind;
             }
             if (osc_title.scanOscTitle(self.output_buf[0..n])) |t| {
+                self.claude_title_live = osc_title.isClaudeTitle(t);
                 self.setTitle(t) catch |err| {
                     log.warn("session {d}: failed to store terminal title: {}", .{ self.id, err });
                 };

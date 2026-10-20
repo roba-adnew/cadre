@@ -291,6 +291,32 @@ session.pending_write buffer
 PTY write() -> shell process stdin
 ```
 
+### Composer Input Path
+
+```
+Claude title on the pane (OSC 2 "<glyph> <name>")
+    | SessionState.claude_title_live -> SessionUiInfo.claude_live
+    v
+ComposerComponent.update (Full view, nothing covering it)
+    | shows the NSTextView, SDL_StopTextInput, makeFirstResponder(text view)
+    | SetComposerHeight -> Window.composer_height -> focused PTY loses those rows
+    v
+Key press (NSEvent)
+    | SDL sees it first (KEY_DOWN only, text input is off) -> UiRoot -> ComposerComponent
+    |   routeKeyDown: composer -> consumed (the text view edits; Cmd+C/X/V/A/Z performed explicitly)
+    |                 terminal -> not consumed -> normal runtime key path to the PTY
+    |                 submit   -> UiAction.ComposerSubmit
+    | then AppKit delivers it to the text view; its delegate (commandAction) drops
+    | the editing command for keys that went to the terminal
+    v
+ComposerSubmit -> terminal_actions.pasteText (bracketed paste) + Return -> PTY
+```
+
+Clicks on the box never reach SDL (AppKit hit-tests them to the text view), so
+the delegate's selection-change callback stops SDL text input immediately; a
+click on the terminal (an SDL mouse-down) hands the keyboard back via
+`SDL_StartTextInput`.
+
 ### Grid Drag-Reorder Path
 
 Press-and-hold a grid tile (220ms, <6px travel) to start a reorder drag;
@@ -489,6 +515,8 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 | `ui/types.zig` | Shared UI type definitions | `UiHost`, `UiAction`, `UiActionQueue`, `UiAssets`, `SessionUiInfo` | `app/app_state`, `colors`, `font`, `geom` |
 | `ui/session_view_state.zig` | Per-session UI interaction state (selection, scroll, hover, agent status, scrollbar fade/drag state) | `SessionViewState` (selection, scroll offset, hover, status, terminal scrollbar state) | `app/app_state` (for `SessionStatus` enum), `ui/components/scrollbar` |
 | `ui/components/context_menu.zig` | Right-click context menu: Paste plus the window/terminal shortcuts; items other than Paste are executed by pushing the equivalent Cmd key event (tagged with the window id) back into SDL so the existing handlers run | `ContextMenuComponent`, `Layout`, `clampOrigin()`, `keyEventFor()` | `ui/types`, `gfx/primitives`, `font_cache`, `dpi`, `geom`, `c` |
+| `ui/components/composer.zig` | Composer: a native text box docked under the focused full-view pane while Claude runs there (`SessionUiInfo.claude_live`). Routes keys between the box and the terminal (`routeKeyDown`), arbitrates keyboard focus between the AppKit text view and SDL text input (yielding to Claude's approval prompts and to overlays that type into their own field via `UiHost.text_entry_open`), hides whenever a higher UI component covers it (`UiRoot.hitTestAbove`), keeps per-terminal drafts by `persist_index`, and emits `ComposerSubmit` (bracketed paste + Return) and `SetComposerHeight` (the focused PTY is sized to the rows above it) | `ComposerComponent`, `routeKeyDown()`, `shouldShow()`, `composerRect()`, `normalizeSubmitText()` | `ui/components/composer_view`, `ui/root`, `ui/types`, `ui/first_frame_guard`, `dpi`, `geom`, `c` |
+| `ui/components/composer_view.zig` | The composer's AppKit side: an NSTextView in an NSScrollView added over the SDL view through the objc runtime (typed `objc_msgSend` shim, delegate class built at runtime) — plain text, no smart substitutions, spellcheck on. The delegate vetoes editing commands for keys routed to the terminal (`commandAction`) and stops SDL text input the instant the box is clicked (AppKit delivers that click to the text view, never to SDL). arm64 macOS only; elsewhere `create` returns null | `ComposerView`, `commandAction()`, `Edit` | `geom`, `c`, AppKit (objc runtime) |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
 | `ui/components/markdown_parser.zig` | Shared markdown parser for reader mode and story overlays. Parses headings, paragraphs, lists (including task checkboxes), blockquotes, markdown tables, fenced code, horizontal rules, inline styles (bold/italic/code/strikethrough/link), and prompt separator blocks. In story mode (`parseStory()`), additionally handles `story-diff` fenced blocks, code block metadata JSON, anchor extraction (`**[N]**` in prose, `<!--ref:N-->` in code), and per-line paragraph emission. | `parse()`, `parseStory()`, `freeBlocks()`, `DisplayBlock`, `StyledSpan`, `CodeBlockMeta`, `CodeLineKind`, `ParseOptions` | std |
 | `ui/components/markdown_renderer.zig` | Line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator and story-specific line kinds (diff headers, diff lines, code lines with anchor/kind metadata) | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |

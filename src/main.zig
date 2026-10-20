@@ -36,4 +36,6 @@ test {
     _ = @import("session/notify.zig");
     _ = @import("ui/types.zig");
     _ = @import("ui/components/context_menu.zig");
+    _ = @import("ui/components/composer.zig");
+    _ = @import("ui/components/composer_view.zig");
 }

@@ -1973,6 +1973,10 @@ const Window = struct {
     diff_overlay_component: *ui_mod.diff_overlay.DiffOverlayComponent,
     reader_overlay_component: *ui_mod.reader_overlay.ReaderOverlayComponent,
     story_overlay_component: *ui_mod.story_overlay.StoryOverlayComponent,
+    composer_component: *ui_mod.composer.ComposerComponent,
+    /// Render pixels the composer reserves at the bottom of the full view; the
+    /// focused PTY gets the rows above it (0 while the composer is hidden).
+    composer_height: c_int,
 
     /// Order: SDL window -> renderer -> fonts -> sizes -> sessions -> restore ->
     /// caches -> UI. Mirrors the pre-extraction init sequence of run().
@@ -2029,6 +2033,7 @@ const Window = struct {
         platform.startTextInput(self.pw.window);
         errdefer platform.stopTextInput(self.pw.window);
         self.text_input_active = true;
+        self.composer_height = 0;
 
         self.font_size = persistence.font_size;
         self.window_focused = true;
@@ -2325,6 +2330,8 @@ const Window = struct {
         try self.ui.register(self.reader_overlay_component.asComponent());
         self.story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
         try self.ui.register(self.story_overlay_component.asComponent());
+        self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
+        try self.ui.register(self.composer_component.asComponent());
 
         return self;
     }
@@ -2369,7 +2376,18 @@ const Window = struct {
     /// stable dims across view-mode toggles; full_size uses the raw render height.
     fn computeTerminalSizes(self: *Window) layout.Sizes {
         const grid_render_height = adjustedRenderHeightForMode(.Grid, self.render_height, self.ui_scale, self.grid.rows);
-        return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, self.render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+        const full_render_height = @max(0, self.render_height - self.composer_height);
+        return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+    }
+
+    /// An overlay that types into its own field is open (it needs SDL text
+    /// input, which the composer otherwise holds off while focused).
+    fn textEntryOpen(self: *const Window) bool {
+        return self.find_bar_comp_ptr.open or
+            self.hidden_switcher_comp_ptr.open or
+            self.context_menu_component.open or
+            self.worktree_comp_ptr.overlay.state != .Closed or
+            self.recent_folders_comp_ptr.overlay.state != .Closed;
     }
 
     fn handleExternalSpawnRequest(self: *Window, pending: *control.PendingSpawn, now: i64) void {
@@ -3750,7 +3768,7 @@ const Window = struct {
         }
 
         const focused_has_foreground_process = self.foreground_cache.get(now, self.anim_state.focused_session, sessions);
-        const ui_update_host = ui_host.makeUiHost(
+        var ui_update_host = ui_host.makeUiHost(
             now,
             self.render_width,
             self.render_height,
@@ -3771,6 +3789,7 @@ const Window = struct {
             focused_has_foreground_process,
             &app.theme,
         );
+        ui_update_host.text_entry_open = self.textEntryOpen();
         self.ui.update(&ui_update_host);
 
         ui_action_loop: while (self.ui.popAction()) |action| switch (action) {
@@ -4218,6 +4237,25 @@ const Window = struct {
                     self.ui.showToast("Failed to open story file", now);
                 }
                 allocator.free(story_action.path);
+            },
+            .ComposerSubmit => |submit| {
+                defer allocator.free(submit.text);
+                if (submit.session >= sessions.len) continue;
+                const target = sessions[submit.session];
+                if (!target.spawned or target.dead) continue;
+                // One bracketed paste (the program sees it as pasted, not typed),
+                // then the same Return a key press would send.
+                terminal_actions.pasteText(target, allocator, submit.text, self.session_interaction_component) catch |err| {
+                    log.warn("composer paste failed: {}", .{err});
+                    continue;
+                };
+                input_keys.handleKeyInput(target, c.SDLK_RETURN, 0) catch |err| {
+                    log.warn("composer submit failed: {}", .{err});
+                };
+            },
+            .SetComposerHeight => |height| {
+                self.composer_height = height;
+                self.applyTerminalLayout();
             },
         };
 
