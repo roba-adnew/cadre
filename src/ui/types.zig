@@ -161,6 +161,15 @@ pub const UiAction = union(enum) {
     /// Pixels the composer occupies at the bottom of the full view (0 = hidden),
     /// so the focused PTY is sized to the rows left above it.
     SetComposerHeight: c_int,
+    /// Store a terminal's unsent draft so it survives a Cadre restart.
+    SaveComposerDraft: ComposerDraftAction,
+};
+
+/// Persist a terminal's unsent composer draft (empty clears it).
+pub const ComposerDraftAction = struct {
+    persist_index: usize,
+    /// Heap-allocated; ownership transfers to runtime, which frees after use.
+    text: []const u8,
 };
 
 pub const ComposerSubmitAction = struct {

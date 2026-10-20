@@ -85,6 +85,9 @@ const NoView = struct {
     pub fn clipboardIsImageOnly() bool {
         return false;
     }
+    pub fn takeEdited(_: *NoView) bool {
+        return false;
+    }
 };
 
 pub const Edit = enum { cut, copy, paste, select_all, undo, redo };
@@ -378,6 +381,7 @@ const AppKitView = struct {
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textView:doCommandBySelector:"), @ptrCast(&doCommandBySelector), "c@:@:");
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textViewDidChangeSelection:"), @ptrCast(&didChangeSelection), "v@:@");
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("undoManagerForTextView:"), @ptrCast(&undoManagerForTextView), "@@:@");
+        _ = objc.class_addMethod(new_cls, objc.sel_registerName("textDidChange:"), @ptrCast(&textDidChange), "v@:@");
         objc.objc_registerClassPair(new_cls);
         return @ptrCast(new_cls);
     }
@@ -426,7 +430,28 @@ const AppKitView = struct {
 
     // Text view -> SDL window and undo manager, for the delegate callbacks
     // (main thread only).
-    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null, undo: Id = null };
+    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null, undo: Id = null, edited: bool = false };
+
+    // NSTextDidChangeNotification: posted for the user's edits only, not for
+    // setString: (so loading a draft doesn't count as editing it).
+    fn textDidChange(_: Id, _: Id, notification: Id) callconv(.c) void {
+        const text_view = send(Id, notification, "object", .{});
+        for (&registry) |*entry| {
+            if (entry.text_view != null and entry.text_view == text_view) entry.edited = true;
+        }
+    }
+
+    /// True once after the user edits the text (typing, paste, dictation, undo).
+    pub fn takeEdited(self: *AppKitView) bool {
+        for (&registry) |*entry| {
+            if (entry.text_view == self.text) {
+                const edited = entry.edited;
+                entry.edited = false;
+                return edited;
+            }
+        }
+        return false;
+    }
     var registry: [16]Registration = [_]Registration{.{}} ** 16;
 
     fn registerView(text_view: Id, window: *c.SDL_Window, undo: Id) void {

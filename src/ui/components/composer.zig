@@ -31,6 +31,9 @@ const Rect = geom.Rect;
 /// get keys first while open.
 pub const z_index: i32 = 700;
 const font_pt: f64 = 14;
+/// Pause after the last edit before the draft is persisted (it is also
+/// persisted right away when the box hides or switches panes).
+const draft_save_delay_ms: i64 = 1000;
 const min_height_pt: c_int = 36;
 
 pub const Route = enum { composer, terminal, submit };
@@ -182,6 +185,9 @@ pub const ComposerComponent = struct {
     theme_key: ?[2]c.SDL_Color = null,
     /// Unsent text of panes not currently shown, by persist_index.
     drafts: std.AutoHashMapUnmanaged(usize, []u8) = .empty,
+    /// Edited since the draft was last handed to the runtime to persist.
+    persist_pending: bool = false,
+    last_edit_ms: i64 = 0,
     first_frame: FirstFrameGuard = .{},
 
     pub fn init(allocator: std.mem.Allocator, window: *c.SDL_Window, root: *UiRoot) !*ComposerComponent {
@@ -305,7 +311,41 @@ pub const ComposerComponent = struct {
             return true;
         };
         view.setText(self.allocator, "");
+        // Sent: clear the persisted copy so it doesn't come back after a restart.
+        self.persist_pending = true;
+        self.persistDraft(view, out);
         return true;
+    }
+
+    /// Hand the bound pane's current text to the runtime to persist (see
+    /// tmux.setComposerDraft) if it changed since the last time.
+    fn persistDraft(self: *ComposerComponent, view: *ComposerView, out: *types.UiActionQueue) void {
+        if (!self.persist_pending) return;
+        const key = self.draft_key orelse return;
+        const text = view.copyText(self.allocator) catch |err| {
+            log.warn("failed to read composer draft: {}", .{err});
+            return;
+        };
+        out.append(.{ .SaveComposerDraft = .{ .persist_index = key, .text = text } }) catch |err| {
+            log.warn("failed to queue composer draft save: {}", .{err});
+            self.allocator.free(text);
+            return;
+        };
+        self.persist_pending = false;
+    }
+
+    /// A draft persisted by an earlier Cadre run (restored at startup). Kept
+    /// only if this run has no draft of its own for that terminal yet.
+    pub fn seedDraft(self: *ComposerComponent, persist_index: usize, text: []const u8) void {
+        if (text.len == 0 or self.draft_key == persist_index or self.drafts.contains(persist_index)) return;
+        const copy = self.allocator.dupe(u8, text) catch |err| {
+            log.warn("failed to restore composer draft: {}", .{err});
+            return;
+        };
+        self.drafts.put(self.allocator, persist_index, copy) catch |err| {
+            log.warn("failed to restore composer draft: {}", .{err});
+            self.allocator.free(copy);
+        };
     }
 
     fn updateFn(ptr: *anyopaque, host: *const types.UiHost, out: *types.UiActionQueue) void {
@@ -320,6 +360,7 @@ pub const ComposerComponent = struct {
 
         if (show and self.visible and host.focused_session != self.session) {
             // Pane switched while the box stays up (grid tile or full view): swap drafts.
+            self.persistDraft(view, out);
             self.saveDraft(view);
             self.bindSession(view, host);
             self.focusComposer(view);
@@ -334,6 +375,7 @@ pub const ComposerComponent = struct {
                 view.setHidden(false);
                 self.focusComposer(view);
             } else {
+                self.persistDraft(view, out);
                 self.saveDraft(view);
                 self.draft_key = null;
                 if (self.want_focus) self.focusTerminal(view);
@@ -343,6 +385,11 @@ pub const ComposerComponent = struct {
         }
 
         if (self.visible) {
+            if (view.takeEdited()) {
+                self.persist_pending = true;
+                self.last_edit_ms = host.now_ms;
+            }
+            if (self.persist_pending and host.now_ms - self.last_edit_ms >= draft_save_delay_ms) self.persistDraft(view, out);
             self.applyTheme(view, host);
             self.syncFocus(view, host);
             view.setFrame(rect, host.window_w, host.window_h);

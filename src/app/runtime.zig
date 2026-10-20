@@ -1474,6 +1474,7 @@ const App = struct {
 
         // Renderer-bound state must die while the source renderer is alive.
         carryViewState(&src.session_interaction_component.viewSlice()[src_idx], &dst.session_interaction_component.viewSlice()[plan.slot_index]);
+        dst.restoreComposerDraft(dst.sessions[plan.slot_index]);
         dropCacheEntry(&src.render_cache, src_idx);
         dropCacheEntry(&dst.render_cache, plan.slot_index);
 
@@ -2340,6 +2341,7 @@ const Window = struct {
         try self.ui.register(self.story_overlay_component.asComponent());
         self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
         cwd_bar_component.composer = self.composer_component;
+        for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
 
         return self;
@@ -2403,6 +2405,16 @@ const Window = struct {
             }
         }
         return changed;
+    }
+
+    /// Pick up a terminal's unsent composer draft from its tmux session (left
+    /// there by an earlier run, see tmux.setComposerDraft).
+    fn restoreComposerDraft(self: *Window, session: *SessionState) void {
+        if (!session.spawned or !session.tmux_backed) return;
+        const draft = tmux.getComposerDraft(self.app.allocator, session.persist_index) orelse return;
+        defer self.app.allocator.free(draft);
+        log.info("restored composer draft for terminal {d} ({d} bytes)", .{ session.persist_index, draft.len });
+        self.composer_component.seedDraft(session.persist_index, draft);
     }
 
     /// An overlay that types into its own field is open (it needs SDL text
@@ -4276,6 +4288,7 @@ const Window = struct {
                         log.info("composer submit refused: no agent in session {d}'s foreground", .{submit.session});
                         target.claude_title_live = false; // hides the box (its draft keeps the text)
                         self.composer_component.returnText(target.persist_index, submit.text);
+                        if (target.tmux_backed) tmux.setComposerDraft(allocator, target.persist_index, submit.text);
                         self.ui.showToast("Claude isn't running here \u{2014} kept your text", now);
                         continue;
                     }
@@ -4291,6 +4304,14 @@ const Window = struct {
                 input_keys.handleKeyInput(target, c.SDLK_RETURN, 0) catch |err| {
                     log.warn("composer submit failed: {}", .{err});
                 };
+            },
+            .SaveComposerDraft => |draft| {
+                defer allocator.free(draft.text);
+                for (sessions) |session| {
+                    if (session.persist_index != draft.persist_index) continue;
+                    if (session.spawned and session.tmux_backed) tmux.setComposerDraft(allocator, draft.persist_index, draft.text);
+                    break;
+                }
             },
             .SetComposerHeight => |height| {
                 self.composer_height = height;

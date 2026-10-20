@@ -513,6 +513,102 @@ pub fn discardOrphanSession(allocator: std.mem.Allocator, persist_index: usize) 
 /// Destroy the persistent session outright, attached or not — the CLOSE path:
 /// a discarded terminal's session must not linger as a resurrection target.
 /// Quit never calls this; its sessions stay alive for reattach. Best-effort.
+/// tmux user option holding a terminal's unsent composer draft (base64).
+const draft_option = "@cadre_composer_draft";
+
+/// Store a terminal's unsent composer draft on its tmux session; empty text
+/// removes it. The option lives exactly as long as the session, so a draft
+/// survives Cadre quitting or reloading (like the text in Claude's own prompt)
+/// and disappears when the terminal is closed, so a new terminal that reuses
+/// the persist_index can't inherit it. Base64 so any text survives tmux's
+/// option parsing. Spawns tmux: call it debounced, never per keystroke.
+pub fn setComposerDraft(allocator: std.mem.Allocator, persist_index: usize, text: []const u8) void {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return;
+    defer allocator.free(tmux_path);
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{runtimeDir()}) catch return;
+    defer allocator.free(socket_path);
+    const target = sessionName(allocator, persist_index) orelse return;
+    defer allocator.free(target);
+    // "=name:": exact session (no prefix match) in the target-pane form
+    // set-option/show-options take; bare "=name" is rejected there.
+    const exact = allocZ(allocator, "={s}:", .{target}) catch return;
+    defer allocator.free(exact);
+    const encoded = encodeDraft(allocator, text) catch |err| {
+        log.warn("setComposerDraft: encode failed: {}", .{err});
+        return;
+    };
+    defer allocator.free(encoded);
+
+    const argv: []const []const u8 = if (text.len == 0)
+        &.{ tmux_path, "-S", socket_path, "set-option", "-u", "-t", exact, draft_option }
+    else
+        &.{ tmux_path, "-S", socket_path, "set-option", "-t", exact, draft_option, encoded };
+    const result = std.process.Child.run(.{ .allocator = allocator, .argv = argv }) catch |err| {
+        log.warn("setComposerDraft: {s} failed: {}", .{ target, err });
+        return;
+    };
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
+}
+
+/// The draft stored by `setComposerDraft`, or null when there is none (or tmux
+/// can't be asked). Caller owns the result.
+pub fn getComposerDraft(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+    const tmux_path = findOnPath(allocator, "tmux") orelse return null;
+    defer allocator.free(tmux_path);
+    const socket_path = allocZ(allocator, "{s}/cadre-tmux.sock", .{runtimeDir()}) catch return null;
+    defer allocator.free(socket_path);
+    const target = sessionName(allocator, persist_index) orelse return null;
+    defer allocator.free(target);
+    // "=name:": exact session (no prefix match) in the target-pane form
+    // set-option/show-options take; bare "=name" is rejected there.
+    const exact = allocZ(allocator, "={s}:", .{target}) catch return null;
+    defer allocator.free(exact);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ tmux_path, "-S", socket_path, "show-options", "-v", "-t", exact, draft_option },
+        .max_output_bytes = 8 << 20,
+    }) catch |err| {
+        log.warn("getComposerDraft: {s} failed: {}", .{ target, err });
+        return null;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+    const encoded = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (encoded.len == 0) return null;
+    return decodeDraft(allocator, encoded) catch |err| {
+        log.warn("getComposerDraft: {s} has an unreadable draft: {}", .{ target, err });
+        return null;
+    };
+}
+
+fn encodeDraft(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(text.len));
+    return @constCast(std.base64.standard.Encoder.encode(out, text));
+}
+
+fn decodeDraft(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
+    errdefer allocator.free(out);
+    try std.base64.standard.Decoder.decode(out, encoded);
+    return out;
+}
+
+test "composer drafts round-trip through the tmux option encoding" {
+    const text = "line one\n  \"quoted\" #{format} $HOME \u{2733}\nlast";
+    const encoded = try encodeDraft(std.testing.allocator, text);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOfAny(u8, encoded, " \n#\"$") == null);
+    const decoded = try decodeDraft(std.testing.allocator, encoded);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(text, decoded);
+}
+
 pub fn killSession(allocator: std.mem.Allocator, persist_index: usize) void {
     const tmux_path = findOnPath(allocator, "tmux") orelse return;
     defer allocator.free(tmux_path);
