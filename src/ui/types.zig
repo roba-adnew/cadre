@@ -24,6 +24,9 @@ pub const SessionUiInfo = struct {
     agent_name: ?[]const u8 = null,
     /// Claude Code is running in this pane right now (its title is up).
     claude_live: bool = false,
+    /// Claude is waiting on a permission/input answer (see
+    /// `SessionViewState.approval_pending`; viewing the pane doesn't clear it).
+    approval_pending: bool = false,
     /// Stable per-terminal id (`SessionState.persist_index`); unlike the slot
     /// index it survives grid reorders, so per-terminal UI state keys on it.
     persist_index: usize = 0,

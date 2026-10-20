@@ -432,6 +432,30 @@ pub fn scrubStaleGlobalEnv(allocator: std.mem.Allocator) void {
     };
 }
 
+/// `ps` rows (`tpgid pgid comm`) for every process on the persistent session's
+/// pane tty. tmux's own #{pane_current_command} names only the foreground
+/// group's LEADER, which is a zsh wrapper when Claude was started through one,
+/// so callers that need "what is in the foreground" scan these rows instead.
+/// Spawns two subprocesses: event paths only. Caller owns; null on failure.
+pub fn paneProcessTable(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+    const tty = paneDisplay(allocator, persist_index, "#{pane_tty}") orelse return null;
+    defer allocator.free(tty);
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "/bin/ps", "-t", std.fs.path.basename(tty), "-o", "tpgid=,pgid=,comm=" },
+    }) catch |err| {
+        log.warn("paneProcessTable: ps failed: {}", .{err});
+        return null;
+    };
+    allocator.free(result.stderr);
+    switch (result.term) {
+        .Exited => |code| if (code == 0) return result.stdout,
+        else => {},
+    }
+    allocator.free(result.stdout);
+    return null;
+}
+
 /// The pid of the persistent session's pane process (the shell running inside
 /// tmux). For a tmux-backed session the PTY child is the tmux client, so
 /// process-tree checks must start from the pane pid — the real tree lives

@@ -1863,12 +1863,14 @@ fn transferSlot(src: []*SessionState, src_idx: usize, dst: []*SessionState, dst_
 fn carryViewState(src: *SessionViewState, dst: *SessionViewState) void {
     const status = src.status;
     const claude_seen = src.claude_seen;
+    const approval_pending = src.approval_pending;
     const attention = src.attention;
     const hosting = src.hosting;
     src.reset();
     dst.reset();
     dst.status = status;
     dst.claude_seen = claude_seen;
+    dst.approval_pending = approval_pending;
     dst.attention = attention;
     dst.hosting = hosting;
 }
@@ -4243,6 +4245,19 @@ const Window = struct {
                 if (submit.session >= sessions.len) continue;
                 const target = sessions[submit.session];
                 if (!target.spawned or target.dead) continue;
+                // The box follows Claude's title, which a crashed Claude leaves up;
+                // pasting + Return into the shell would run the text as a command.
+                if (target.agentInForeground()) |agent_running| {
+                    if (!agent_running) {
+                        log.info("composer submit refused: no agent in session {d}'s foreground", .{submit.session});
+                        target.claude_title_live = false; // hides the box (its draft keeps the text)
+                        self.composer_component.returnText(target.persist_index, submit.text);
+                        self.ui.showToast("Claude isn't running here \u{2014} kept your text", now);
+                        continue;
+                    }
+                } else {
+                    log.warn("composer submit: couldn't confirm an agent in session {d}; sending anyway", .{submit.session});
+                }
                 // One bracketed paste (the program sees it as pasted, not typed),
                 // then the same Return a key press would send.
                 terminal_actions.pasteText(target, allocator, submit.text, self.session_interaction_component) catch |err| {

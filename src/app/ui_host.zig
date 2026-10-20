@@ -83,6 +83,7 @@ pub fn makeUiHost(
             // from Claude Code's /rename); borrows the session-owned string.
             .agent_name = session.title,
             .claude_live = session.claude_title_live,
+            .approval_pending = if (i < views.len) views[i].approval_pending else false,
             .persist_index = session.persist_index,
         };
     }

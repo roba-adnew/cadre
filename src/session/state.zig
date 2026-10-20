@@ -992,6 +992,22 @@ pub const SessionState = struct {
         return null;
     }
 
+    /// Whether an AI agent holds the terminal's foreground right now: true/false,
+    /// or null when that can't be determined. Spawns tmux + ps for tmux-backed
+    /// panes, so event paths only (a composer send), never per frame.
+    pub fn agentInForeground(self: *const SessionState) ?bool {
+        if (!self.spawned or self.dead) return false;
+        if (self.tmux_backed) {
+            const rows = tmux.paneProcessTable(self.allocator, self.persist_index) orelse return null;
+            defer self.allocator.free(rows);
+            return foregroundHasAgent(rows);
+        }
+        if (self.detectForegroundAgent() != null) return true;
+        // The shell itself in the foreground means no agent; anything else
+        // (a wrapper we can't see through) is unknown.
+        return if (self.hasForegroundProcess()) null else false;
+    }
+
     /// Store the Claude Code session name parsed from terminal title `t`. Non-Claude
     /// titles (shell/git prompt strings) are ignored, so the last captured name
     /// sticks even while the shell repaints its own title between agent turns.
@@ -1030,6 +1046,41 @@ fn terminalColorsFromTheme(theme: colors_mod.Theme) ghostty_vt.Terminal.Colors {
         .cursor = .unset,
         .palette = .init(palette),
     };
+}
+
+/// True when a row of `ps -o tpgid=,pgid=,comm=` output is an agent inside the
+/// terminal's foreground process group (pgid == tpgid).
+fn foregroundHasAgent(ps_rows: []const u8) bool {
+    var lines = std.mem.tokenizeScalar(u8, ps_rows, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.tokenizeAny(u8, line, " \t");
+        const tpgid = fields.next() orelse continue;
+        const pgid = fields.next() orelse continue;
+        if (!std.mem.eql(u8, tpgid, pgid)) continue;
+        const comm = std.mem.trim(u8, fields.rest(), " \t\r");
+        if (AgentKind.fromComm(std.fs.path.basename(comm)) != null) return true;
+    }
+    return false;
+}
+
+test "foregroundHasAgent finds claude under a zsh wrapper, ignores background groups" {
+    // Claude started through a zsh wrapper: the wrapper leads the foreground group.
+    try std.testing.expect(foregroundHasAgent(
+        \\87034 86602 /bin/zsh
+        \\87034 87034 /bin/zsh
+        \\87034 87034 claude
+        \\87034 87034 node
+    ));
+    // Claude gone (crashed): the login shell holds the foreground.
+    try std.testing.expect(!foregroundHasAgent(
+        \\86602 86602 /bin/zsh
+    ));
+    // An agent in a background group doesn't count.
+    try std.testing.expect(!foregroundHasAgent(
+        \\86602 86602 -zsh
+        \\86602 90001 claude
+    ));
+    try std.testing.expect(!foregroundHasAgent(""));
 }
 
 /// Returns the AgentKind for a given PID by inspecting its process name via sysctl.

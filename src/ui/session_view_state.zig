@@ -7,6 +7,11 @@ pub const SessionViewState = struct {
     /// True once any Claude notify-hook status has arrived for this session.
     /// Distinguishes "Claude is idle" from "Claude never ran here".
     claude_seen: bool = false,
+    /// Claude is waiting on a permission/input answer right now. Unlike
+    /// `status`, focusing the pane (acknowledgeAttention) doesn't clear it; only
+    /// Claude's next hook status does. The composer hands Claude the keyboard
+    /// while it's set.
+    approval_pending: bool = false,
     /// The session's process tree owns a listening TCP socket (a local server).
     /// Refreshed by runtime's hosting poll while the hidden switcher is open.
     hosting: bool = false,
@@ -35,6 +40,7 @@ pub const SessionViewState = struct {
     /// the visible status changed, so callers can mark the session dirty.
     pub fn applyClaudeStatus(self: *SessionViewState, status: app_state.SessionStatus) bool {
         self.claude_seen = true;
+        self.approval_pending = status == .awaiting_approval;
         if (self.status == status) return false;
         self.status = status;
         return true;

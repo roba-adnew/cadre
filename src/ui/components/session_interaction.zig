@@ -2188,6 +2188,18 @@ test "acknowledgeAttention demotes done and needs-you, leaving other statuses un
     try testing.expectEqual(app_state.SessionStatus.idle, view.status);
 }
 
+test "approval_pending survives acknowledgeAttention until Claude's next status" {
+    var view = view_state.SessionViewState{};
+    _ = view.applyClaudeStatus(.awaiting_approval);
+    try testing.expect(view.approval_pending);
+    // Switching to the pane demotes the badge but Claude is still waiting.
+    try testing.expect(view.acknowledgeAttention());
+    try testing.expect(view.approval_pending);
+    // Answering resumes Claude; its next hook status clears it.
+    _ = view.applyClaudeStatus(.running);
+    try testing.expect(!view.approval_pending);
+}
+
 test "setAttention does not affect nav_wave_start_time" {
     var view = view_state.SessionViewState{};
     view.nav_wave_start_time = 500;

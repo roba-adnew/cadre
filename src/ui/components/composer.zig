@@ -204,6 +204,26 @@ pub const ComposerComponent = struct {
         }
     }
 
+    /// Put text the runtime refused to send (no agent in the pane) back as that
+    /// pane's draft, so nothing typed or dictated is lost.
+    pub fn returnText(self: *ComposerComponent, persist_index: usize, text: []const u8) void {
+        if (self.visible and self.draft_key == persist_index) {
+            if (self.view) |*view| view.setText(self.allocator, text);
+            return;
+        }
+        const copy = self.allocator.dupe(u8, text) catch |err| {
+            log.warn("failed to keep refused composer text: {}", .{err});
+            return;
+        };
+        const entry = self.drafts.getOrPut(self.allocator, persist_index) catch |err| {
+            log.warn("failed to keep refused composer text: {}", .{err});
+            self.allocator.free(copy);
+            return;
+        };
+        if (entry.found_existing) self.allocator.free(entry.value_ptr.*);
+        entry.value_ptr.* = copy;
+    }
+
     fn submit(self: *ComposerComponent, host: *const types.UiHost, out: *types.UiActionQueue) bool {
         const view = &(self.view orelse return false);
         const raw = view.copyText(self.allocator) catch |err| {
@@ -288,7 +308,7 @@ pub const ComposerComponent = struct {
 
         // Claude asks for approval (keys like 1/2/3 must reach it), or an overlay
         // needs SDL text input for its own field.
-        const approval = host.sessions[host.focused_session].session_status == .awaiting_approval;
+        const approval = host.sessions[host.focused_session].approval_pending;
         if (!approval and !host.text_entry_open) {
             self.yield_spent = false;
             if (self.yielded) {
