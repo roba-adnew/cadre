@@ -4599,16 +4599,17 @@ pub fn run() !void {
     // Heal a server left poisoned by an older build (stale global resume cmd)
     // before any session spawns or reattaches this run.
     tmux.scrubStaleGlobalEnv(allocator);
+    // Pane shells and `claude` run under a Cadre-signed host so they keep
+    // ~/Documents access after this Cadre quits (ADR-016). Before any spawn, and
+    // before the hook install below writes the `claude` wrapper, which bakes it in.
+    // Lives for the whole process (page_allocator, never freed).
+    shell.setHostExe(host_mod.prepareHostExe(std.heap.page_allocator));
     // Ensure Claude's hooks (incl. the SessionStart id-capture hook) are installed
     // so a running agent's resume id is written to persistence.toml WHILE it runs.
     // That live capture is the only way a conversation survives a full device
     // reboot, which SIGKILLs the process with no chance to scrape the id at quit.
     // Runs before the restore spawns below, so this run's agents get the hook too.
     shell.ensureClaudeHookInstalled(allocator);
-    // Pane shells and `claude` run under a Cadre-signed host so they keep
-    // ~/Documents access after this Cadre quits (ADR-016). Before any spawn.
-    // Lives for the whole process (page_allocator, never freed).
-    shell.setHostExe(host_mod.prepareHostExe(std.heap.page_allocator));
 
     // Seed the live grid font scale: a persisted value (from a previous
     // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then

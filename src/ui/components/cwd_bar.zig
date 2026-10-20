@@ -163,7 +163,7 @@ pub const CwdBarComponent = struct {
             .h = bar_height,
         };
         if (self.composer) |comp| {
-            if (grid_index) |i| bar_rect.y -= comp.gridReservePx(host, i);
+            if (grid_index) |i| bar_rect.y -= comp.gridBandPx(host, i);
         }
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);

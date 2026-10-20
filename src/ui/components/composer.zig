@@ -130,6 +130,36 @@ pub fn tileReservePx(host: *const types.UiHost, i: usize, live: ?LiveBox) c_int 
     return dpi.scale(min_height_pt, host.ui_scale);
 }
 
+/// Gap between a terminal's last row (`term_top + term_h`) and a band docked
+/// below it at `band_top`: the bottom padding plus the part row the PTY can't
+/// use. The band grows up into it, so the box sits right under Claude's status
+/// line. Capped so a PTY that hasn't caught up with a resize can't balloon it.
+pub fn slackPx(term_top: c_int, term_h: c_int, band_top: c_int, ui_scale: f32) c_int {
+    if (term_h <= 0) return 0;
+    return std.math.clamp(band_top - (term_top + term_h), 0, dpi.scale(min_height_pt * 2, ui_scale));
+}
+
+/// Height of the band under grid tile `i`'s id line: `reserve` grown up so the
+/// id line sits right under the terminal's last row.
+pub fn tileBandPx(host: *const types.UiHost, i: usize, reserve: c_int) c_int {
+    if (reserve <= 0 or i >= host.sessions.len or host.grid_cols == 0) return reserve;
+    const top: c_int = @as(c_int, @intCast(i / host.grid_cols)) * host.cell_h;
+    const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
+    const bar = dpi.scale(cwd_bar_metrics.height, host.ui_scale);
+    const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
+    const band_top = top + host.cell_h - border - reserve - bar;
+    return reserve + slackPx(top + pad, host.sessions[i].term_h_px, band_top, host.ui_scale);
+}
+
+/// The docked `box` grown up to the focused terminal's last row.
+pub fn snugRect(host: *const types.UiHost, box: Rect) Rect {
+    const lift = if (host.view_mode == .Grid)
+        tileBandPx(host, host.focused_session, box.h) - box.h
+    else
+        slackPx(dpi.scale(renderer_mod.terminal_padding, host.ui_scale), host.sessions[host.focused_session].term_h_px, box.y, host.ui_scale);
+    return .{ .x = box.x, .y = box.y - lift, .w = box.w, .h = box.h + lift };
+}
+
 /// Bottom strip of grid tile `i` with height `h` (inside the tile border).
 fn tileStrip(host: *const types.UiHost, i: usize, h: c_int) Rect {
     const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
@@ -196,7 +226,10 @@ pub const ComposerComponent = struct {
     draft_key: ?usize = null,
     content_h: c_int = 0,
     reported_h: c_int = 0,
+    /// Where the box is drawn: the docked box grown up by `snugRect`.
     rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    /// The docked box's own height, before `snugRect`; what the PTY gives up.
+    box_h: c_int = 0,
     theme_key: ?[2]c.SDL_Color = null,
     /// Unsent text of panes not currently shown, by persist_index.
     drafts: std.AutoHashMapUnmanaged(usize, []u8) = .empty,
@@ -416,6 +449,8 @@ pub const ComposerComponent = struct {
             view.setFrame(rect, host.window_w, host.window_h);
             self.content_h = view.contentHeightPx(host.window_h);
             if (area) |a| rect = composerRect(a, self.content_h, host.ui_scale);
+            self.box_h = rect.h;
+            rect = snugRect(host, rect);
             view.setFrame(rect, host.window_w, host.window_h);
         }
         self.rect = rect;
@@ -423,7 +458,7 @@ pub const ComposerComponent = struct {
         self.in_grid = in_grid;
         // Full view: the runtime shrinks the focused PTY by this. Grid tiles
         // are sized from `gridReservePx` instead.
-        const reserve: c_int = if (self.visible and !in_grid) rect.h else 0;
+        const reserve: c_int = if (self.visible and !in_grid) self.box_h else 0;
         if (reserve != self.reported_h) {
             out.append(.{ .SetComposerHeight = reserve }) catch |err| {
                 log.warn("failed to queue composer height: {}", .{err});
@@ -553,8 +588,14 @@ pub const ComposerComponent = struct {
     /// tiles too small for a box.
     pub fn gridReservePx(self: *const ComposerComponent, host: *const types.UiHost, i: usize) c_int {
         if (self.view == null) return 0;
-        const live: ?LiveBox = if (self.visible and self.in_grid) .{ .session = self.session, .h = self.rect.h } else null;
+        const live: ?LiveBox = if (self.visible and self.in_grid) .{ .session = self.session, .h = self.box_h } else null;
         return tileReservePx(host, i, live);
+    }
+
+    /// What tile `i` shows under its id line (cwd_bar.zig lifts the id line by
+    /// this): its reserve grown up to the terminal's last row.
+    pub fn gridBandPx(self: *const ComposerComponent, host: *const types.UiHost, i: usize) c_int {
+        return tileBandPx(host, i, self.gridReservePx(host, i));
     }
 
     fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
@@ -566,7 +607,7 @@ pub const ComposerComponent = struct {
             const fill = host.theme.surface(1);
             for (host.sessions, 0..) |_, i| {
                 if (self.visible and i == self.session) continue;
-                const h = self.gridReservePx(host, i);
+                const h = self.gridBandPx(host, i);
                 if (h <= 0) continue;
                 const strip = tileStrip(host, i, h);
                 _ = c.SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
@@ -751,6 +792,35 @@ test "tileReservePx: live box on its tile, a strip on other Claude tiles, nothin
 
     host.cell_h = 90; // too short for the box plus a usable terminal
     try testing.expect(dockArea(&host) == null);
+}
+
+test "snugRect grows the box up to the terminal's last row" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true, .term_h_px = 500 },
+        .{ .dead = false, .spawned = true, .claude_live = true },
+    };
+    var host = testHost(&sessions);
+    const pad = renderer_mod.terminal_padding;
+
+    // Full view: the box top meets the last row (padding + 500 px of rows).
+    const box = composerRect(.{ .x = 0, .y = 0, .w = 800, .h = 600 }, 0, 1.0);
+    const full = snugRect(&host, box);
+    try testing.expectEqual(@as(c_int, pad + 500), full.y);
+    try testing.expectEqual(@as(c_int, 600), full.y + full.h);
+    // Unknown PTY height: left as docked. A PTY far behind: capped.
+    sessions[0].term_h_px = 0;
+    try testing.expectEqual(box, snugRect(&host, box));
+    sessions[0].term_h_px = 100;
+    try testing.expectEqual(@as(c_int, min_height_pt * 3), snugRect(&host, box).h);
+
+    // Grid: the id line (above the band) starts at the last row of tile 1.
+    host.view_mode = .Grid;
+    const border = renderer_mod.grid_border_thickness;
+    const bar = cwd_bar_metrics.height;
+    sessions[1].term_h_px = 600 - border - min_height_pt - bar - pad - 20; // 20 px of slack
+    const band = tileBandPx(&host, 1, min_height_pt);
+    try testing.expectEqual(@as(c_int, min_height_pt + 20), band);
+    try testing.expectEqual(@as(c_int, pad + sessions[1].term_h_px), 600 - border - band - bar);
 }
 
 test "firstLine previews the first non-blank line" {

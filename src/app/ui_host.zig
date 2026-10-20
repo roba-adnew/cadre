@@ -85,6 +85,7 @@ pub fn makeUiHost(
             .claude_live = session.claude_title_live,
             .approval_pending = if (i < views.len) views[i].approval_pending else false,
             .persist_index = session.persist_index,
+            .term_h_px = session.pty_size.ws_ypixel,
         };
     }
 

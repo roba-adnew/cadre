@@ -30,6 +30,9 @@ pub const SessionUiInfo = struct {
     /// Stable per-terminal id (`SessionState.persist_index`); unlike the slot
     /// index it survives grid reorders, so per-terminal UI state keys on it.
     persist_index: usize = 0,
+    /// Pixel height of the rows the PTY has (`pty_size.ws_ypixel`); the
+    /// composer docks right under the last one. 0 = unknown.
+    term_h_px: c_int = 0,
 
     /// Spawned but pulled out of the grid — listed by the hidden-terminals switcher.
     pub fn isHidden(self: SessionUiInfo) bool {
