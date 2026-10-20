@@ -48,6 +48,7 @@ const metrics_mod = @import("../metrics.zig");
 const open_url = @import("../os/open.zig");
 const terminal_history = @import("terminal_history.zig");
 const tmux = @import("../tmux.zig");
+const host_mod = @import("../os/host.zig");
 const shell = @import("../shell.zig");
 
 const log = std.log.scoped(.runtime);
@@ -4506,6 +4507,10 @@ pub fn run() !void {
     // reboot, which SIGKILLs the process with no chance to scrape the id at quit.
     // Runs before the restore spawns below, so this run's agents get the hook too.
     shell.ensureClaudeHookInstalled(allocator);
+    // Pane shells and `claude` run under a Cadre-signed host so they keep
+    // ~/Documents access after this Cadre quits (ADR-016). Before any spawn.
+    // Lives for the whole process (page_allocator, never freed).
+    shell.setHostExe(host_mod.prepareHostExe(std.heap.page_allocator));
 
     // Seed the live grid font scale: a persisted value (from a previous
     // Cmd+Opt +/- adjustment) wins over the static [font]/[grid] config; then

@@ -179,6 +179,7 @@ Common settings include font family, theme colors, grid font scale, and logging 
 ## Troubleshooting
 
 * **Upgrading from an install named Architect**: the app, binary, config dir (`~/.config/cadre`), log dir, tmux session prefix, sockets and `CADRE_*` env vars were all renamed from `architect`. Quit the app and run `scripts/migrate-to-cadre.sh` once: it moves config/logs and renames live tmux sessions so your terminals reattach. Hook commands in `~/.claude/settings.json` are rewritten on the next launch, and panes started before the rename keep notifying via `ARCHITECT_*` fallbacks until they restart.
+* **"Operation not permitted" in ~/Documents inside a pane**: panes run under a small Cadre helper (`cadre host`) so they keep folder access after Cadre restarts (ADR-016). Panes that were already open before you upgraded to this version still depend on the Cadre instance that started them; restart them once (close and reopen, or `~/.claude/scripts/cadre-tmux-migrate.sh` for all at once; Claude conversations resume).
 * **App won't open (Gatekeeper)**: run `xattr -dr com.apple.quarantine Cadre.app` after extracting the release.
 * **Font not found**: ensure the font is installed and set `font.family` in `config.toml`. The app falls back to `SFNSMono` on macOS.
 * **Missing symbol glyphs**: fallbacks try the bundled Symbols Nerd Font, then `Arial Unicode MS`, then `STIXTwoMath` (if available) before emoji.

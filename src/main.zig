@@ -1,6 +1,7 @@
 const std = @import("std");
 const runtime = @import("app/runtime.zig");
 const logging = @import("logging.zig");
+const host = @import("os/host.zig");
 
 pub const std_options: std.Options = .{
     // Keep compile-time logging permissive; runtime filtering is handled by
@@ -10,6 +11,8 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
+    // `cadre host <program>`: pane/agent process host, no UI (see os/host.zig).
+    if (host.isHostInvocation(std.os.argv)) host.run(std.os.argv);
     try runtime.run();
 }
 
@@ -36,4 +39,5 @@ test {
     _ = @import("session/notify.zig");
     _ = @import("ui/types.zig");
     _ = @import("ui/components/context_menu.zig");
+    _ = @import("os/host.zig");
 }
