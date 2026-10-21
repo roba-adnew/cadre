@@ -297,6 +297,25 @@ pub const SessionInteractionComponent = struct {
         return true;
     }
 
+    /// A plain grid click on a tile whose program tracks the mouse (Claude, vim)
+    /// reaches that program as a full click, so its clickable UI works without
+    /// expanding the tile first. Sent on release because the press could still
+    /// have become a hold-drag or a drag-select.
+    fn forwardGridClick(self: *SessionInteractionComponent, host: *const types.UiHost, x: c_int, y: c_int) void {
+        const idx = calculateHoveredSession(x, y, host) orelse return;
+        if (idx >= self.sessions.len or idx >= self.views.len) return;
+        const session = self.sessions[idx];
+        if (!session.spawned) return;
+        const terminal = &(session.terminal orelse return);
+        const shift_held = (c.SDL_GetModState() & c.SDL_KMOD_SHIFT) != 0;
+        if (!forwardMouseToProgram(terminalHasMouseTracking(terminal), self.views[idx].is_viewing_scrollback, shift_held)) return;
+        const cell = gridTileCellFromMouse(host, x, y, idx, terminal.cols, terminal.rows) orelse return;
+        var buf: [64]u8 = undefined;
+        session.sendInput(encodeClick(cell.col, cell.row, terminal.modes.get(.mouse_format_sgr), &buf)) catch |err| {
+            log.warn("session {d}: failed to send grid click: {}", .{ idx, err });
+        };
+    }
+
     /// The hold resolved as a click or an ordinary drag: deliver the press the
     /// program was owed, so what follows (motion, release) reads as one gesture.
     fn flushDeferredPress(self: *SessionInteractionComponent, host: *const types.UiHost) void {
@@ -607,6 +626,7 @@ pub const SessionInteractionComponent = struct {
                 }
 
                 if (inGridView(host.view_mode) and event.button.button == c.SDL_BUTTON_LEFT) {
+                    var plain_click = false;
                     switch (self.reorder_phase) {
                         // The drag owned this press; every re-slot was already
                         // committed live, so release just ends the gesture.
@@ -621,6 +641,7 @@ pub const SessionInteractionComponent = struct {
                         // the select that was deferred on press.
                         .pending => {
                             self.reorder_phase = .idle;
+                            plain_click = true;
                             if (self.deferred_select) |idx| {
                                 self.deferred_select = null;
                                 actions.append(.{ .SelectGridSession = idx }) catch |err| {
@@ -636,6 +657,7 @@ pub const SessionInteractionComponent = struct {
                         self.grid_selection_idx = null;
                         if (was_dragging) return true; // consumed the drag-select release
                     }
+                    if (plain_click) self.forwardGridClick(host, @intFromFloat(event.button.x), @intFromFloat(event.button.y));
                 }
             },
             c.SDL_EVENT_MOUSE_MOTION => {
@@ -931,7 +953,7 @@ pub const SessionInteractionComponent = struct {
                                 // window. Both yield the pane-local (col,row) the
                                 // mouse-scroll encoding needs.
                                 const cell_opt = if (host.view_mode == .Grid)
-                                    gridScrollCellFromMouse(host, mouse_x, mouse_y, session_idx, terminal.cols, terminal.rows)
+                                    gridTileCellFromMouse(host, mouse_x, mouse_y, session_idx, terminal.cols, terminal.rows)
                                 else
                                     fullViewCellFromMouse(mouse_x, mouse_y, host.window_w, host.window_h, self.font, host.term_cols, host.term_rows, host.ui_scale);
                                 if (cell_opt) |cell| {
@@ -1237,6 +1259,13 @@ fn forwardMouseToProgram(has_mouse_tracking: bool, viewing_scrollback: bool, shi
     return has_mouse_tracking and !viewing_scrollback and !shift_held;
 }
 
+/// Left press + release in one write, so the program gets the click whole.
+fn encodeClick(col: u16, row: u16, sgr: bool, buf: *[64]u8) []const u8 {
+    const n = input.encodeMouseButton(.left, col, row, true, sgr, buf[0..32]);
+    const m = input.encodeMouseButton(.left, col, row, false, sgr, buf[n..]);
+    return buf[0 .. n + m];
+}
+
 fn sdlToMouseButton(sdl_button: u8) ?input.MouseButton {
     return switch (sdl_button) {
         c.SDL_BUTTON_LEFT => .left,
@@ -1452,11 +1481,11 @@ fn gridCellAt(rel_x: c_int, rel_y: c_int, drawable_w: c_int, drawable_h: c_int, 
 }
 
 /// Map a grid-view mouse position to the (col,row) cell inside the hovered tile,
-/// for forwarding a wheel scroll to a mouse-tracking program so it scrolls its
-/// own view (the grid analogue of fullViewCellFromMouse). Geometry mirrors
+/// for forwarding a wheel scroll or click to a mouse-tracking program (the grid
+/// analogue of fullViewCellFromMouse). Geometry mirrors
 /// gridViewHitFromMouse / renderer.renderSessionContent (same padding + cwd-bar
 /// reserved strip + native grid cell size).
-fn gridScrollCellFromMouse(
+fn gridTileCellFromMouse(
     host: *const types.UiHost,
     mouse_x: c_int,
     mouse_y: c_int,
@@ -2279,6 +2308,11 @@ test "cellCodepoint honors content_tag for text and non-text cells" {
         .content_tag = .bg_color_rgb,
         .content = .{ .color_palette = 0xFF },
     }));
+}
+
+test "encodeClick: press then release at the 1-based cell" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("\x1b[<0;5;3M\x1b[<0;5;3m", encodeClick(4, 2, true, &buf));
 }
 
 test "gridCellAt maps by fixed cell size, not proportional stretch" {
