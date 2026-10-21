@@ -31,6 +31,7 @@ pub const HiddenSwitcherComponent = struct {
     pub const vtable = component.UiComponent.VTable{
         .handleEvent = handleEvent,
         .render = render,
+        .hitTest = hitTest,
         .wantsFrame = wantsFrame,
     };
 
@@ -437,6 +438,14 @@ pub const HiddenSwitcherComponent = struct {
         }
     }
 
+    /// Modal: covers the whole window while open, so the composer's native box
+    /// (which AppKit draws above every SDL overlay) hides instead of showing
+    /// through the menu (UiRoot.hitTestAbove).
+    fn hitTest(ptr: *anyopaque, _: *const types.UiHost, _: c_int, _: c_int) bool {
+        const self: *HiddenSwitcherComponent = @ptrCast(@alignCast(ptr));
+        return self.open;
+    }
+
     fn wantsFrame(ptr: *anyopaque, host: *const types.UiHost) bool {
         _ = host;
         const self: *HiddenSwitcherComponent = @ptrCast(@alignCast(ptr));
@@ -494,6 +503,14 @@ const test_sessions = [_]types.SessionUiInfo{
     .{ .dead = false, .spawned = false, .hidden = true, .cwd_basename = "dead" }, // 2: not spawned
     .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "cacha" }, // 3: no agent
 };
+
+test "open switcher covers the window, so the composer hides under it" {
+    var switcher = HiddenSwitcherComponent{ .allocator = std.testing.allocator };
+    const host: types.UiHost = undefined;
+    try std.testing.expect(!HiddenSwitcherComponent.hitTest(&switcher, &host, 10, 10));
+    switcher.toggle();
+    try std.testing.expect(HiddenSwitcherComponent.hitTest(&switcher, &host, 10, 10));
+}
 
 test "collectHidden picks only spawned+hidden, preserving index order" {
     var buf: [max_entries]usize = undefined;

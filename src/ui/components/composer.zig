@@ -639,14 +639,14 @@ pub const ComposerComponent = struct {
                 const strip = tileBoxRect(host, i, h, self.idWidthPx(i));
                 _ = c.SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
                 _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(strip.x), .y = @floatFromInt(strip.y), .w = @floatFromInt(strip.w), .h = @floatFromInt(strip.h) });
-                drawHairline(renderer, line, strip);
+                drawRowBorders(renderer, line, tileBoxRect(host, i, h, 0));
                 const draft = self.drafts.get(host.sessions[i].persist_index) orelse continue;
                 self.drawPreview(renderer, host, assets, strip, firstLine(draft));
             }
         }
         if (!self.visible) return;
-        // Hairline over the box; the box itself is the native view.
-        drawHairline(renderer, line, self.rect);
+        // The box itself is the native view; its row's borders span the id too.
+        drawRowBorders(renderer, line, if (self.in_grid) tileBoxRect(host, self.session, self.rect.h, 0) else self.rect);
         self.first_frame.markDrawn();
     }
 
@@ -690,10 +690,16 @@ pub const ComposerComponent = struct {
         return fonts.regular;
     }
 
-    fn drawHairline(renderer: *c.SDL_Renderer, color: c.SDL_Color, rect: Rect) void {
+    /// Lines along the top and bottom of a box row, just outside it (the
+    /// native box covers its own rect).
+    fn drawRowBorders(renderer: *c.SDL_Renderer, color: c.SDL_Color, row: Rect) void {
         _ = c.SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
-        const y: f32 = @floatFromInt(rect.y - 1);
-        _ = c.SDL_RenderLine(renderer, @floatFromInt(rect.x), y, @floatFromInt(rect.x + rect.w), y);
+        const x0: f32 = @floatFromInt(row.x);
+        const x1: f32 = @floatFromInt(row.x + row.w);
+        for ([_]c_int{ row.y - 1, row.y + row.h }) |y_px| {
+            const y: f32 = @floatFromInt(y_px);
+            _ = c.SDL_RenderLine(renderer, x0, y, x1, y);
+        }
     }
 
     fn hitTestFn(ptr: *anyopaque, _: *const types.UiHost, x: c_int, y: c_int) bool {
