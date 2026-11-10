@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const c = @import("../../c.zig");
+const colors = @import("../../colors.zig");
 const dpi = @import("../../dpi.zig");
 const geom = @import("../../geom.zig");
 const types = @import("../types.zig");
@@ -44,6 +45,17 @@ const preview_inset_y: c_int = 9;
 const min_height_pt: c_int = 36;
 /// Space between Claude's status line (the terminal's last row) and the box.
 const status_gap_pt: c_int = 10;
+/// Light red wash on the box while the keyboard is in Claude's own prompt
+/// (the user clicked the terminal), so typing into the wrong input shows.
+/// Strength is a by-eye knob.
+const away_tint = c.SDL_Color{ .r = 255, .g = 40, .b = 40, .a = 255 };
+const away_tint_fraction: f32 = 0.18;
+
+/// The box's background: tinted red when `keyboard_away`.
+pub fn boxBackground(theme: *const colors.Theme, keyboard_away: bool) c.SDL_Color {
+    const bg = theme.surface(1);
+    return if (keyboard_away) colors.shadeToward(bg, away_tint, away_tint_fraction) else bg;
+}
 
 pub const Route = enum { composer, terminal, submit };
 
@@ -460,8 +472,9 @@ pub const ComposerComponent = struct {
 
         if (self.visible) {
             if (self.persist_pending and host.now_ms - self.last_edit_ms >= draft_save_delay_ms) self.persistDraft(view, out);
-            self.applyTheme(view, host);
+            // After syncFocus, so the tint follows a focus change the same frame.
             self.syncFocus(view, host);
+            self.applyTheme(view, host);
             view.setFrame(rect, host.window_w, host.window_h);
             self.content_h = view.contentHeightPx(host.window_h);
             if (area) |a| rect = placeBox(host, composerRect(a, self.content_h, host.ui_scale), id_w);
@@ -583,12 +596,14 @@ pub const ComposerComponent = struct {
 
     fn applyTheme(self: *ComposerComponent, view: *ComposerView, host: *const types.UiHost) void {
         const theme = host.theme;
-        const key = [2]c.SDL_Color{ theme.background, theme.foreground };
+        // Away = the user handed the keyboard to the terminal. A yield to a
+        // permission prompt or an overlay is expected, so it stays untinted.
+        const bg = boxBackground(theme, !self.want_focus and !self.yielded);
+        const key = [2]c.SDL_Color{ bg, theme.foreground };
         if (self.theme_key) |prev| {
             if (std.meta.eql(prev, key)) return;
         }
         self.theme_key = key;
-        const bg = theme.surface(1);
         view.setColors(
             .{ .r = bg.r, .g = bg.g, .b = bg.b },
             .{ .r = theme.foreground.r, .g = theme.foreground.g, .b = theme.foreground.b },
@@ -787,6 +802,14 @@ fn testHost(sessions: []types.SessionUiInfo) types.UiHost {
         .sessions = sessions,
         .theme = undefined,
     };
+}
+
+test "boxBackground tints the box red only while the keyboard is away" {
+    const theme = colors.Theme.default();
+    const home = boxBackground(&theme, false);
+    const away = boxBackground(&theme, true);
+    try testing.expect(colors.colorsEqual(home, theme.surface(1)));
+    try testing.expect(@as(i32, away.r) - away.g > @as(i32, home.r) - home.g);
 }
 
 test "dockArea is the whole window in full view, the focused tile above its cwd bar in the grid" {
