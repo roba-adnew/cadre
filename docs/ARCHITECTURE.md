@@ -417,7 +417,7 @@ MCP client
     v
 src/mcp/main.zig
     | JSON-RPC initialize/tools/list/tools/call
-    | validates spawn_session / close_session arguments
+    | validates spawn_session / close_session / reveal_session arguments
     v
 app/control.zig
     | scans per-instance discovery files in XDG_RUNTIME_DIR or stable per-user runtime dir
@@ -465,7 +465,7 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 | SDL event queue | Keyboard, mouse, window events | Primary user interaction |
 | PTY read | Shell process stdout/stderr | Terminal content updates |
 | Unix domain socket | External AI tools | Status notifications (JSON) |
-| Unix domain socket | `cadre-mcp` | Local `spawn_session` / `close_session` control requests |
+| Unix domain socket | `cadre-mcp` | Local `spawn_session` / `close_session` / `reveal_session` control requests |
 | Config files | `~/.config/cadre/` | Startup configuration and persistence |
 
 ### Storage
@@ -496,7 +496,7 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 | Module | Responsibility | Public API (key functions/types) | Dependencies |
 |--------|---------------|----------------------------------|--------------|
 | `main.zig` | Thin entrypoint + global logging hook registration | `main()`, `std_options.logFn` | `app/runtime`, `logging` |
-| `mcp/main.zig` | Separate `cadre-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session` and `close_session` tools. | `main()`, `run()` | `app/control` module import, std |
+| `mcp/main.zig` | Separate `cadre-mcp` stdio MCP server. Handles JSON-RPC lifecycle methods and exposes the `spawn_session`, `close_session` and `reveal_session` tools. | `main()`, `run()` | `app/control` module import, std |
 | `app/runtime.zig` | Application lifetime (`App`), per-window state and behavior (`Window`: create/destroy, handleEvent, pumpSessions, update, renderIfNeeded), frame loop, session spawning, config persistence, logging lifecycle/view-transition markers | `run()`, `App`, `Window` | `platform/sdl`, `session/state`, `render/renderer`, `ui/root`, `config`, `logging`, all `app/*` modules |
 | `app/control.zig` | Local control channel shared by the app and `cadre-mcp`: spawn/close request schemas, discovery file, Unix socket listener, request queues, and response serialization. Close requests are discriminated on the wire by `"op":"close"`. | `SpawnRequest`, `SpawnResponse`, `SpawnQueue`, `CloseRequest`, `CloseResponse`, `CloseQueue`, `startControlThread()`, `connectAndSendSpawnRequest()`, `connectAndSendCloseRequest()` | std (socket, thread, JSON) |
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |

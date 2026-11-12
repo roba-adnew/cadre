@@ -19,7 +19,7 @@ Examples:
 
 ## MCP tools
 
-`cadre-mcp` is launched by an MCP client as a stdio server. It exposes two tools, `spawn_session` and `close_session`, and forwards each call to the running Cadre app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Cadre is not already running.
+`cadre-mcp` is launched by an MCP client as a stdio server. It exposes three tools, `spawn_session`, `close_session` and `reveal_session`, and forwards each call to the running Cadre app through a local Unix-domain control socket. The helper is not a daemon and does not launch the GUI app if Cadre is not already running.
 
 ## MCP `spawn_session`
 
@@ -101,7 +101,7 @@ Input schema:
     },
     "slot_index": {
       "type": "integer",
-      "description": "The grid slot index to close. Provide this or session_id."
+      "description": "The grid slot index of the session. Provide this or session_id."
     }
   }
 }
@@ -269,3 +269,18 @@ Cadre terminals (it can call `cadre notify` under the hood).
      }
    }
    ```
+
+## MCP `reveal_session`
+
+Shows a terminal session in the grid and focuses it. A hidden session is unhidden and lands at the end of the grid; if a pane is zoomed, the window drops back to the grid. It takes the same input schema as `close_session` (exactly one of `session_id` or `slot_index`) and travels the same control path with `op: "reveal"`.
+
+Successful calls return MCP structured content like:
+
+```json
+{
+  "status": "revealed",
+  "session_id": 12
+}
+```
+
+An unknown identifier returns the `not_found` tool error.

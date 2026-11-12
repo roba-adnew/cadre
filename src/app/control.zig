@@ -150,6 +150,10 @@ pub const SpawnQueue = struct {
 pub const CloseRequest = struct {
     session_id: ?usize = null,
     slot_index: ?usize = null,
+    /// `op:"reveal"`: show the session in the grid instead of closing it.
+    // ponytail: reveal rides the close request/queue/response, since all three
+    // are "one identifier in, session_id out"; split it out if the shapes diverge.
+    reveal: bool = false,
 };
 
 pub const CloseSuccess = struct {
@@ -531,11 +535,12 @@ fn setFdNonBlocking(fd: posix.fd_t, context: []const u8) void {
     }
 }
 
-/// True when the parsed request carries `op:"close"`; spawn requests never do.
+/// True when the parsed request carries `op:"close"` or `op:"reveal"`; spawn requests never do.
 fn isCloseRequest(value: std.json.Value) bool {
     if (value != .object) return false;
     const op_value = value.object.get("op") orelse return false;
-    return op_value == .string and std.mem.eql(u8, op_value.string, "close");
+    if (op_value != .string) return false;
+    return std.mem.eql(u8, op_value.string, "close") or std.mem.eql(u8, op_value.string, "reveal");
 }
 
 fn handleControlConnection(
@@ -704,7 +709,10 @@ pub fn parseCloseRequestFromValue(value: std.json.Value) ParseCloseRequestError!
         }
 
         if (std.mem.eql(u8, key, "op")) {
-            if (field_value != .string or !std.mem.eql(u8, field_value.string, "close")) return error.InvalidOp;
+            if (field_value != .string) return error.InvalidOp;
+            if (std.mem.eql(u8, field_value.string, "reveal")) {
+                request.reveal = true;
+            } else if (!std.mem.eql(u8, field_value.string, "close")) return error.InvalidOp;
             continue;
         }
 
@@ -721,7 +729,7 @@ pub fn parseCloseErrorMessage(err: ParseCloseRequestError) []const u8 {
         error.MissingIdentifier => "session_id or slot_index is required",
         error.InvalidSessionId => "session_id must be a non-negative integer",
         error.InvalidSlotIndex => "slot_index must be a non-negative integer",
-        error.InvalidOp => "op must be \"close\"",
+        error.InvalidOp => "op must be \"close\" or \"reveal\"",
         error.UnknownField => "close_session contains an unsupported field",
     };
 }
@@ -917,7 +925,7 @@ pub fn controlCloseRequestAlloc(allocator: std.mem.Allocator, request: CloseRequ
 
     try json.beginObject();
     try json.objectField("op");
-    try json.write("close");
+    try json.write(if (request.reveal) "reveal" else "close");
     if (request.session_id) |session_id| {
         try json.objectField("session_id");
         try json.write(session_id);
@@ -1419,4 +1427,24 @@ test "controlCloseRequestAlloc emits op close and identifier" {
     try std.testing.expect(isCloseRequest(parsed.value));
     const request = try parseCloseRequestFromValue(parsed.value);
     try std.testing.expectEqual(@as(?usize, 5), request.session_id);
+}
+
+test "reveal request round-trips as op reveal on the close path" {
+    const allocator = std.testing.allocator;
+
+    const payload = try controlCloseRequestAlloc(allocator, .{ .session_id = 131, .reveal = true });
+    defer allocator.free(payload);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"op\":\"reveal\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trim(u8, payload, "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expect(isCloseRequest(parsed.value));
+    const request = try parseCloseRequestFromValue(parsed.value);
+    try std.testing.expect(request.reveal);
+    try std.testing.expectEqual(@as(?usize, 131), request.session_id);
+
+    // A plain close never reveals.
+    var close_parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"op\":\"close\",\"session_id\":1}", .{});
+    defer close_parsed.deinit();
+    try std.testing.expect(!(try parseCloseRequestFromValue(close_parsed.value)).reveal);
 }

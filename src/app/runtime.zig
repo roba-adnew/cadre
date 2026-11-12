@@ -2760,9 +2760,42 @@ const Window = struct {
         };
 
         const session_id = sessions[idx].id;
-        self.despawnSessionAtIndex(idx, false, now);
+        if (pending.request.reveal) {
+            self.revealInGrid(idx);
+        } else {
+            self.despawnSessionAtIndex(idx, false, now);
+        }
 
         pending.completion.complete(.{ .success = .{ .session_id = session_id } });
+    }
+
+    /// Show the grid with the terminal in `idx` focused: unhide it when hidden
+    /// and drop out of a zoomed pane. Shared by the hidden switcher's reveal
+    /// and the external `reveal_session` control request.
+    fn revealInGrid(self: *Window, idx: usize) void {
+        const sessions = self.sessions;
+        const reveal_id = sessions[idx].id;
+        if (sessions[idx].hidden) {
+            sessions[idx].hidden = false;
+            // Reveal is a fresh appearance: mint a new order_seq so the
+            // terminal lands at the END of the grid instead of re-sorting
+            // by its old seq into the middle of a hand-arranged order.
+            sessions[idx].order_seq = session_state.mintOrderSeqBlock(1);
+            sessions[idx].markDirty();
+            compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
+        }
+        const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
+        self.grid.cols = new_dims.cols;
+        self.grid.rows = new_dims.rows;
+        self.cell_width_pixels = @divFloor(self.render_width, @as(c_int, @intCast(self.grid.cols)));
+        self.cell_height_pixels = @divFloor(self.render_height, @as(c_int, @intCast(self.grid.rows)));
+        self.anim_state.mode = .Grid;
+        if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
+            self.anim_state.focused_session = new_idx;
+            // Revealing is a focus: acknowledge a sticky "done"/"needs you" back to idle.
+            self.session_interaction_component.acknowledgeAttention(new_idx);
+        }
+        self.applyTerminalLayout();
     }
 
     fn reloadFontsForScaleChange(self: *Window) font_mod.Font.InitError!void {
@@ -3920,26 +3953,7 @@ const Window = struct {
             .RevealHiddenTerminal => |idx| {
                 if (idx >= sessions.len) continue;
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
-                const reveal_id = sessions[idx].id;
-                sessions[idx].hidden = false;
-                // Reveal is a fresh appearance: mint a new order_seq so the
-                // terminal lands at the END of the grid instead of re-sorting
-                // by its old seq into the middle of a hand-arranged order.
-                sessions[idx].order_seq = session_state.mintOrderSeqBlock(1);
-                sessions[idx].markDirty();
-                compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
-                const new_dims = GridLayout.calculateDimensions(countVisibleSessions(sessions));
-                self.grid.cols = new_dims.cols;
-                self.grid.rows = new_dims.rows;
-                self.cell_width_pixels = @divFloor(self.render_width, @as(c_int, @intCast(self.grid.cols)));
-                self.cell_height_pixels = @divFloor(self.render_height, @as(c_int, @intCast(self.grid.rows)));
-                self.anim_state.mode = .Grid;
-                if (findSessionIndexById(sessions, reveal_id)) |new_idx| {
-                    self.anim_state.focused_session = new_idx;
-                    // Revealing is a focus: acknowledge a sticky "done"/"needs you" back to idle.
-                    self.session_interaction_component.acknowledgeAttention(new_idx);
-                }
-                self.applyTerminalLayout();
+                self.revealInGrid(idx);
                 self.ui.showToast("Revealed terminal", now);
             },
             .DespawnSession => |idx| {

@@ -41,7 +41,7 @@ Cadre solves this with a grid view that keeps all your agents visible, with **st
 - **Hide terminals** (⌘J / ⌘⇧J) — pull a terminal out of the grid with ⌘J to declutter (it keeps running in the background); press ⌘⇧J to open a searchable switcher listing every hidden terminal as `agent.folder` (just the folder when no agent is running) with live agent status (needs you / working / done / idle — driven by Claude's hooks: "needs you" only appears for real permission/input requests (not a session idling at the prompt), "working" only shows while Claude is actually processing, and "needs you" / "done" are sticky cues that clear back to idle once you view the terminal; "hosting" when the terminal is serving a local TCP port, and a plain dash when Claude never ran there), then filter by typing the folder or agent name, navigate with arrows or the mouse, and Enter/click to bring one back into the grid (hovering a row shows an × at its right edge; click it to close that terminal without revealing it, with the usual confirmation when a process is still running). A count pill in the top-right corner shows how many are hidden, and hidden terminals stay hidden across restarts
 - **Diff review comments** — click diff lines in the ⌘D overlay to leave inline comments with multiline wrapping, then send them all to a running agent (or start one) with the "Send to agent" button
 - **Story viewer** — run `cadre story <filename>` to open a scrollable overlay that renders PR story files with prose text and diff-colored code blocks
-- **MCP session control** — run `cadre-mcp` from an MCP client to ask the running Cadre app to create a terminal session in a requested working directory (`spawn_session`) or close one and reclaim its slot (`close_session`)
+- **MCP session control** — run `cadre-mcp` from an MCP client to ask the running Cadre app to create a terminal session in a requested working directory (`spawn_session`) close one and reclaim its slot (`close_session`), or show one in the grid (`reveal_session`)
 - **Reader mode** (⌘R) — open a centered markdown reader for the selected terminal's history (works in full view and grid) with live updates, bottom pinning, incremental search (⌘F, Enter/Shift+Enter), markdown tables with inline cell styling (bold/italic/code/links/strikethrough), task checkboxes (emoji), clickable links, shared draggable scrollbar, and left-to-right gradient separators before command prompts (OSC 133 + fallback heuristics)
 
 ### Terminal Essentials
@@ -139,7 +139,7 @@ cadre hook gemini
 
 ## MCP
 
-`cadre-mcp` is a stdio MCP server for local clients. It exposes two tools, `spawn_session` and `close_session`, which forward the request to the running Cadre app. It does not launch Cadre by itself.
+`cadre-mcp` is a stdio MCP server for local clients. It exposes three tools, `spawn_session`, `close_session` and `reveal_session`, which forward the request to the running Cadre app. It does not launch Cadre by itself.
 
 `spawn_session` arguments:
 ```json
@@ -157,6 +157,8 @@ cadre hook gemini
 { "session_id": 12 }
 ```
 On success it returns structured content with `status: "closed"` and the `session_id`. An unknown identifier returns an MCP tool error with code `not_found`.
+
+`reveal_session` takes the same identifier and shows that session in the grid, focused: a hidden session is unhidden (it lands at the end of the grid), and a zoomed pane drops back to the grid. It returns `status: "revealed"` and the `session_id`.
 
 For release downloads, use:
 ```bash

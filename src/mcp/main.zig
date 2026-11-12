@@ -7,6 +7,7 @@ const server_name = "cadre-mcp";
 const server_version = "0.1.0";
 const tool_name = "spawn_session";
 const close_tool_name = "close_session";
+const reveal_tool_name = "reveal_session";
 
 const JsonRpcErrorCode = enum(i32) {
     parse_error = -32700,
@@ -137,7 +138,9 @@ fn handleToolsCall(
     if (std.mem.eql(u8, name_value.string, tool_name)) {
         try handleSpawnToolCall(allocator, stdout_file, id_value, params.object.get("arguments"));
     } else if (std.mem.eql(u8, name_value.string, close_tool_name)) {
-        try handleCloseToolCall(allocator, stdout_file, id_value, params.object.get("arguments"));
+        try handleCloseToolCall(allocator, stdout_file, id_value, params.object.get("arguments"), false);
+    } else if (std.mem.eql(u8, name_value.string, reveal_tool_name)) {
+        try handleCloseToolCall(allocator, stdout_file, id_value, params.object.get("arguments"), true);
     } else {
         try writeJsonRpcError(allocator, stdout_file, id_value, .invalid_params, "unknown tool");
     }
@@ -187,12 +190,13 @@ fn handleCloseToolCall(
     stdout_file: std.fs.File,
     id_value: ?std.json.Value,
     arguments_value: ?std.json.Value,
+    reveal: bool,
 ) !void {
     const arguments = arguments_value orelse {
         try writeToolFailure(allocator, stdout_file, id_value, .invalid_request, "session_id or slot_index is required");
         return;
     };
-    const request = control.parseCloseRequestFromValue(arguments) catch |err| {
+    var request = control.parseCloseRequestFromValue(arguments) catch |err| {
         try writeToolFailure(
             allocator,
             stdout_file,
@@ -202,6 +206,8 @@ fn handleCloseToolCall(
         );
         return;
     };
+    // The tool that was called decides, not an `op` smuggled into its arguments.
+    request.reveal = reveal;
 
     var response = control.connectAndSendCloseRequest(allocator, request) catch |err| {
         var message_buf: [160]u8 = undefined;
@@ -215,7 +221,7 @@ fn handleCloseToolCall(
     defer response.deinit(allocator);
 
     switch (response.response) {
-        .success => |success| try writeCloseToolSuccess(allocator, stdout_file, id_value, success),
+        .success => |success| try writeCloseToolSuccess(allocator, stdout_file, id_value, success, reveal),
         .failure => |failure| try writeToolFailure(allocator, stdout_file, id_value, failure.code, failure.message),
     }
 }
@@ -278,7 +284,8 @@ fn writeToolsListResult(
     try json.objectField("tools");
     try json.beginArray();
     try writeSpawnSessionTool(&json);
-    try writeCloseSessionTool(&json);
+    try writeCloseSessionTool(&json, close_tool_name, "Ask the running Cadre app to close a terminal session and reclaim its grid slot.");
+    try writeCloseSessionTool(&json, reveal_tool_name, "Ask the running Cadre app to show a terminal session in the grid and focus it: a hidden session is unhidden, and a zoomed pane drops back to the grid.");
     try json.endArray();
     try endRpcResult(&json);
 
@@ -384,12 +391,13 @@ fn writeSpawnOutputSchema(json: *std.json.Stringify) !void {
     try json.endObject();
 }
 
-fn writeCloseSessionTool(json: *std.json.Stringify) !void {
+/// close_session and reveal_session share one schema: an identifier in, status + session_id out.
+fn writeCloseSessionTool(json: *std.json.Stringify, name: []const u8, description: []const u8) !void {
     try json.beginObject();
     try json.objectField("name");
-    try json.write(close_tool_name);
+    try json.write(name);
     try json.objectField("description");
-    try json.write("Ask the running Cadre app to close a terminal session and reclaim its grid slot.");
+    try json.write(description);
     try json.objectField("inputSchema");
     try writeCloseInputSchema(json);
     try json.objectField("outputSchema");
@@ -419,7 +427,7 @@ fn writeCloseInputSchema(json: *std.json.Stringify) !void {
     try json.objectField("type");
     try json.write("integer");
     try json.objectField("description");
-    try json.write("The grid slot index to close. Provide this or session_id.");
+    try json.write("The grid slot index of the session. Provide this or session_id.");
     try json.endObject();
 
     try json.endObject();
@@ -506,6 +514,7 @@ fn writeCloseToolSuccess(
     stdout_file: std.fs.File,
     id_value: ?std.json.Value,
     success: control.CloseSuccess,
+    reveal: bool,
 ) !void {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
@@ -518,13 +527,13 @@ fn writeCloseToolSuccess(
     try json.objectField("type");
     try json.write("text");
     try json.objectField("text");
-    try json.print("\"Closed Cadre session {d}.\"", .{success.session_id});
+    try json.print("\"{s} Cadre session {d}.\"", .{ if (reveal) "Revealed" else "Closed", success.session_id });
     try json.endObject();
     try json.endArray();
     try json.objectField("structuredContent");
     try json.beginObject();
     try json.objectField("status");
-    try json.write("closed");
+    try json.write(if (reveal) "revealed" else "closed");
     try json.objectField("session_id");
     try json.write(success.session_id);
     try json.endObject();
@@ -628,7 +637,7 @@ fn writeJsonLine(stdout_file: std.fs.File, bytes: []const u8) !void {
     try stdout_file.writeAll("\n");
 }
 
-test "tools/list exposes spawn_session and close_session" {
+test "tools/list exposes spawn_session, close_session and reveal_session" {
     const allocator = std.testing.allocator;
 
     var tmp = std.testing.tmpDir(.{});
@@ -648,11 +657,13 @@ test "tools/list exposes spawn_session and close_session" {
     const result_value = parsed.value.object.get("result") orelse return error.TestUnexpectedResult;
     const tools_value = result_value.object.get("tools") orelse return error.TestUnexpectedResult;
     const tools = tools_value.array;
-    try std.testing.expectEqual(@as(usize, 2), tools.items.len);
+    try std.testing.expectEqual(@as(usize, 3), tools.items.len);
     const first_name = tools.items[0].object.get("name") orelse return error.TestUnexpectedResult;
     const second_name = tools.items[1].object.get("name") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(tool_name, first_name.string);
     try std.testing.expectEqualStrings(close_tool_name, second_name.string);
+    const third_name = tools.items[2].object.get("name") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(reveal_tool_name, third_name.string);
 }
 
 test "close tool success response carries status closed and session_id" {
@@ -664,7 +675,7 @@ test "close tool success response carries status closed and session_id" {
     var out = try tmp.dir.createFile("close-success.jsonl", .{ .truncate = true });
 
     const id = std.json.Value{ .integer = 3 };
-    try writeCloseToolSuccess(allocator, out, id, .{ .session_id = 8 });
+    try writeCloseToolSuccess(allocator, out, id, .{ .session_id = 8 }, false);
     out.close();
 
     const input = try tmp.dir.readFileAlloc(allocator, "close-success.jsonl", 16 * 1024);
