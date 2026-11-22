@@ -438,13 +438,31 @@ pub fn scrubStaleGlobalEnv(allocator: std.mem.Allocator) void {
 /// so callers that need "what is in the foreground" scan these rows instead.
 /// Spawns two subprocesses: event paths only. Caller owns; null on failure.
 pub fn paneProcessTable(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
-    const tty = paneDisplay(allocator, persist_index, "#{pane_tty}") orelse return null;
+    const tty = paneTty(allocator, persist_index) orelse return null;
     defer allocator.free(tty);
+    return psRows(allocator, &.{ "/bin/ps", "-t", std.fs.path.basename(tty), "-o", "tpgid=,pgid=,comm=" });
+}
+
+/// The persistent session's pane tty (`/dev/ttys003`). Caller owns; null on failure.
+pub fn paneTty(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+    return paneDisplay(allocator, persist_index, "#{pane_tty}");
+}
+
+/// `ps` rows (`pid ppid tty comm`) for EVERY process. An agent's background
+/// shells have no tty, so `paneProcessTable` can't see them. Event paths only.
+/// Caller owns; null on failure.
+pub fn allProcessTable(allocator: std.mem.Allocator) ?[]u8 {
+    return psRows(allocator, &.{ "/bin/ps", "-Ao", "pid=,ppid=,tty=,comm=" });
+}
+
+fn psRows(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "/bin/ps", "-t", std.fs.path.basename(tty), "-o", "tpgid=,pgid=,comm=" },
+        .argv = argv,
+        // The whole-machine table runs past Child.run's 50 KiB default.
+        .max_output_bytes = 1 << 20,
     }) catch |err| {
-        log.warn("paneProcessTable: ps failed: {}", .{err});
+        log.warn("ps failed: {}", .{err});
         return null;
     };
     allocator.free(result.stderr);

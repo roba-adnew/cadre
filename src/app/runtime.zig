@@ -3257,7 +3257,7 @@ const Window = struct {
                         return;
                     }
 
-                    if (session.hasForegroundProcessThorough()) {
+                    if (session.needsCloseConfirm()) {
                         self.confirm_dialog_component.show(
                             "Delete Terminal?",
                             "A process is running. Delete anyway?",
@@ -3907,7 +3907,7 @@ const Window = struct {
             .CloseHiddenTerminal => |idx| {
                 if (idx >= sessions.len) continue;
                 if (!(sessions[idx].spawned and sessions[idx].hidden)) continue;
-                if (sessions[idx].hasForegroundProcessThorough()) {
+                if (sessions[idx].needsCloseConfirm()) {
                     self.confirm_dialog_component.show(
                         "Delete Terminal?",
                         "A process is running. Delete anyway?",

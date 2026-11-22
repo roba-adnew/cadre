@@ -911,6 +911,21 @@ pub const SessionState = struct {
         return self.hasForegroundProcess();
     }
 
+    /// Whether closing this terminal should ask first: a command is running in
+    /// it, or its agent still has a shell of its own going (a background shell,
+    /// or a command it is running right now). An agent on its own closes
+    /// unasked; Cmd+Shift+T brings it back. Event paths only (spawns tmux + ps).
+    // ponytail: tmux panes only; without tmux an agent's shells go unseen.
+    pub fn needsCloseConfirm(self: *const SessionState) bool {
+        if (self.hasForegroundProcessThorough()) return true;
+        if (!self.tmux_backed) return false;
+        const tty = tmux.paneTty(self.allocator, self.persist_index) orelse return false;
+        defer self.allocator.free(tty);
+        const rows = tmux.allProcessTable(self.allocator) orelse return false;
+        defer self.allocator.free(rows);
+        return agentHasDetachedChild(rows, std.fs.path.basename(tty));
+    }
+
     pub fn shellPid(self: *const SessionState) ?posix.pid_t {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
@@ -1068,6 +1083,58 @@ fn foregroundHasAgent(ps_rows: []const u8) bool {
         if (AgentKind.fromComm(std.fs.path.basename(comm)) != null) return true;
     }
     return false;
+}
+
+const PsRow = struct { pid: []const u8, ppid: []const u8, tty: []const u8, comm: []const u8 };
+
+fn parsePsRow(line: []const u8) ?PsRow {
+    var fields = std.mem.tokenizeAny(u8, line, " \t");
+    const pid = fields.next() orelse return null;
+    const ppid = fields.next() orelse return null;
+    const tty = fields.next() orelse return null;
+    return .{ .pid = pid, .ppid = ppid, .tty = tty, .comm = std.mem.trim(u8, fields.rest(), " \t\r") };
+}
+
+/// True when an agent on `tty` has a child with no controlling terminal, given
+/// `ps -Ao pid=,ppid=,tty=,comm=` rows. Claude Code runs its shell commands
+/// that way (detached), while its MCP servers stay on the pane's tty.
+fn agentHasDetachedChild(ps_rows: []const u8, tty: []const u8) bool {
+    var agents = std.mem.tokenizeScalar(u8, ps_rows, '\n');
+    while (agents.next()) |agent_line| {
+        const agent = parsePsRow(agent_line) orelse continue;
+        if (!std.mem.eql(u8, agent.tty, tty)) continue;
+        if (AgentKind.fromComm(std.fs.path.basename(agent.comm)) == null) continue;
+        var kids = std.mem.tokenizeScalar(u8, ps_rows, '\n');
+        while (kids.next()) |kid_line| {
+            const kid = parsePsRow(kid_line) orelse continue;
+            if (std.mem.eql(u8, kid.ppid, agent.pid) and std.mem.eql(u8, kid.tty, "??")) return true;
+        }
+    }
+    return false;
+}
+
+test "agentHasDetachedChild sees an agent's background shell, not its MCP servers" {
+    const mcp_only =
+        \\ 7653  7622 ttys031 /Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre
+        \\ 7697  7653 ttys031 /Users/me/.nvm/versions/node/v22/bin/claude
+        \\ 9462  7697 ttys031 npm exec ios-simulator-mcp
+        \\10776  9462 ttys031 node
+    ;
+    try std.testing.expect(!agentHasDetachedChild(mcp_only, "ttys031"));
+    const with_shell = mcp_only ++
+        \\
+        \\52206  7697 ??      /bin/zsh
+        \\52207 52206 ??      node
+    ;
+    try std.testing.expect(agentHasDetachedChild(with_shell, "ttys031"));
+    // Another pane's agent has the shell; this pane's doesn't.
+    try std.testing.expect(!agentHasDetachedChild(with_shell, "ttys022"));
+    // A detached process that isn't the agent's child (a daemon) doesn't count.
+    try std.testing.expect(!agentHasDetachedChild(
+        \\ 7697  7653 ttys031 /Users/me/.nvm/versions/node/v22/bin/claude
+        \\63814     1 ??      /Users/me/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+    , "ttys031"));
+    try std.testing.expect(!agentHasDetachedChild("", "ttys031"));
 }
 
 test "foregroundHasAgent finds claude under a zsh wrapper, ignores background groups" {
