@@ -758,19 +758,28 @@ fn planExternalSpawnSlot(
     };
 }
 
-const ClosedTerminals = std.ArrayListUnmanaged(config_mod.Persistence.TerminalEntry);
+/// A closed terminal remembered for Cmd+Shift+T: what to respawn, and its
+/// place in the grid order (0 = none, reopen at the end).
+const ClosedTerminal = struct {
+    entry: config_mod.Persistence.TerminalEntry,
+    order_seq: u64,
+};
+const ClosedTerminals = std.ArrayListUnmanaged(ClosedTerminal);
 const max_closed_terminals = 10;
 
 /// Copy `entry` onto the reopen stack, dropping the oldest past the cap.
-fn pushClosedTerminal(list: *ClosedTerminals, allocator: std.mem.Allocator, entry: config_mod.Persistence.TerminalEntry) !void {
+fn pushClosedTerminal(list: *ClosedTerminals, allocator: std.mem.Allocator, entry: config_mod.Persistence.TerminalEntry, order_seq: u64) !void {
     const path = try allocator.dupe(u8, entry.path);
     errdefer allocator.free(path);
     const agent_type = if (entry.agent_type) |s| try allocator.dupe(u8, s) else null;
     errdefer if (agent_type) |s| allocator.free(s);
     const agent_session_id = if (entry.agent_session_id) |s| try allocator.dupe(u8, s) else null;
     errdefer if (agent_session_id) |s| allocator.free(s);
-    if (list.items.len >= max_closed_terminals) freeClosedTerminal(allocator, list.orderedRemove(0));
-    try list.append(allocator, .{ .path = path, .agent_type = agent_type, .agent_session_id = agent_session_id });
+    if (list.items.len >= max_closed_terminals) freeClosedTerminal(allocator, list.orderedRemove(0).entry);
+    try list.append(allocator, .{
+        .entry = .{ .path = path, .agent_type = agent_type, .agent_session_id = agent_session_id },
+        .order_seq = order_seq,
+    });
 }
 
 fn freeClosedTerminal(allocator: std.mem.Allocator, entry: config_mod.Persistence.TerminalEntry) void {
@@ -2563,10 +2572,11 @@ const Window = struct {
     fn reopenClosedTerminal(self: *Window, now: i64) void {
         const app = self.app;
         const allocator = app.allocator;
-        const entry = app.closed_terminals.getLastOrNull() orelse {
+        const closed = app.closed_terminals.getLastOrNull() orelse {
             self.ui.showToast("No closed terminal to reopen", now);
             return;
         };
+        const entry = closed.entry;
         // Planned before popping so a full grid keeps the entry for later.
         const plan = planExternalSpawnSlot(self.sessions, self.grid.cols, self.grid.rows, self.anim_state.focused_session) orelse {
             self.ui.showToast("All terminals in use", now);
@@ -2585,16 +2595,24 @@ const Window = struct {
         defer if (cwd_buf) |buf| allocator.free(buf);
         const cwd_z: ?[:0]const u8 = if (cwd_buf) |buf| buf[0 .. buf.len - 1 :0] else null;
 
-        self.growGridForSpawn(plan, now) catch |err| {
-            log.warn("failed to collect reopen grid moves: {}", .{err});
-            self.ui.showToast("Failed to reopen terminal", now);
-            return;
-        };
+        // Taken before the spawn, so the tiles a mid-grid reopen pushes along can slide.
+        var old_positions: ?std.ArrayList(SessionIndexSnapshot) = null;
+        defer if (old_positions) |*snapshots| snapshots.deinit(allocator);
+        if (app.animations_enabled and (plan.expands_grid or self.anim_state.mode == .Grid)) {
+            old_positions = collectSessionIndexSnapshots(self.sessions, allocator) catch |err| blk: {
+                log.warn("failed to snapshot reopen positions (slide skipped): {}", .{err});
+                break :blk null;
+            };
+        }
 
         const session = self.sessions[plan.slot_index];
         setResumeCommandFromEntry(session, entry, allocator);
+        // Its old place in the grid order. 0 makes the spawn mint a new one,
+        // which lands it at the end.
+        session.order_seq = closed.order_seq;
         session.ensureSpawnedFresh(cwd_z, &app.loop) catch |err| {
             log.warn("reopen spawn failed for cwd {s}: {}", .{ entry.path, err });
+            session.order_seq = 0;
             // Spawn consumes resume_cmd only on success; drop it so a later
             // spawn on this slot doesn't resume a conversation nobody asked for.
             if (session.resume_cmd) |cmd| {
@@ -2606,7 +2624,40 @@ const Window = struct {
         };
         seedSessionAgentMetadataFromEntry(session, entry, allocator);
 
-        self.focusSpawnedSlot(plan.slot_index, now);
+        // Sorts it back between its old neighbours; whoever came or went since
+        // only shifts it by their own slots.
+        compactSessions(self.sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
+        for (self.sessions) |s| {
+            if (s.isVisible()) s.markDirty();
+        }
+        self.resizeGridAfterSpawn(plan, if (old_positions) |snapshots| snapshots.items else null, now);
+        self.focusSpawnedSlot(session.slot_index, now);
+    }
+
+    /// Size the grid for `plan` once the spawn is in place. Given the tiles'
+    /// `old_positions`, the ones that changed slot slide to their new one.
+    fn resizeGridAfterSpawn(self: *Window, plan: ExternalSpawnPlan, old_positions: ?[]const SessionIndexSnapshot, now: i64) void {
+        const allocator = self.app.allocator;
+        if (old_positions) |snapshots| slide: {
+            var moves = collectSessionMovesFromSnapshots(self.sessions, snapshots, allocator) catch |err| {
+                log.warn("failed to collect reopen grid moves (slide skipped): {}", .{err});
+                break :slide;
+            };
+            defer moves.list.deinit(allocator);
+            var shifted = plan.expands_grid;
+            for (moves.list.items) |move| {
+                if (move.old_index) |old_idx| shifted = shifted or old_idx != move.session_idx;
+            }
+            if (!shifted) break :slide;
+            self.grid.startResize(plan.cols, plan.rows, now, self.render_width, self.render_height, moves.list.items) catch |err| {
+                log.warn("failed to start reopen grid resize: {}", .{err});
+                break :slide;
+            };
+            if (self.grid.is_resizing) self.anim_state.mode = .GridResizing;
+            return;
+        }
+        self.grid.cols = plan.cols;
+        self.grid.rows = plan.rows;
     }
 
     /// Close the terminal in `idx`, reclaim its grid slot, and relayout/animate the
@@ -2662,7 +2713,8 @@ const Window = struct {
                     .path = closed.cwd_path orelse "",
                     .agent_type = agent_type,
                     .agent_session_id = attach_id orelse persistedAgentSessionId(closed, agent_type),
-                }) catch |err| {
+                    // A hidden terminal had no place in the grid to come back to.
+                }, if (closed.hidden) 0 else closed.order_seq) catch |err| {
                     log.warn("failed to remember closed terminal for reopen: {}", .{err});
                 };
             }
@@ -2701,6 +2753,9 @@ const Window = struct {
                 if (session.isVisible()) session.markDirty();
             }
             app.persistence_dirty = true;
+            // The reorder renumbered the grid, so remembered places no longer
+            // mean anything: terminals reopened from here on land at the end.
+            for (app.closed_terminals.items) |*closed| closed.order_seq = 0;
             // Slide tiles to their new cells. Unlike add/remove
             // reflows this also starts while a previous slide is in
             // flight (mode == .GridResizing): startResizeWithDuration
@@ -4725,7 +4780,7 @@ pub fn run() !void {
     app.pending_drag_out = null;
     app.closed_terminals = .empty;
     defer {
-        for (app.closed_terminals.items) |entry| freeClosedTerminal(allocator, entry);
+        for (app.closed_terminals.items) |closed| freeClosedTerminal(allocator, closed.entry);
         app.closed_terminals.deinit(allocator);
     }
 
@@ -4947,19 +5002,49 @@ test "pushClosedTerminal copies entries and keeps only the newest" {
     const allocator = std.testing.allocator;
     var list: ClosedTerminals = .empty;
     defer {
-        for (list.items) |entry| freeClosedTerminal(allocator, entry);
+        for (list.items) |closed| freeClosedTerminal(allocator, closed.entry);
         list.deinit(allocator);
     }
     // One reused buffer: entries survive its overwrites only if they were copied.
     var buf: [16]u8 = undefined;
     for (0..max_closed_terminals + 2) |i| {
         const path = try std.fmt.bufPrint(&buf, "/tmp/{d}", .{i});
-        try pushClosedTerminal(&list, allocator, .{ .path = path, .agent_type = "claude", .agent_session_id = "abc" });
+        try pushClosedTerminal(&list, allocator, .{ .path = path, .agent_type = "claude", .agent_session_id = "abc" }, i + 1);
     }
     try std.testing.expectEqual(@as(usize, max_closed_terminals), list.items.len);
-    try std.testing.expectEqualStrings("/tmp/2", list.items[0].path);
-    try std.testing.expectEqualStrings("/tmp/11", list.getLast().path);
-    try std.testing.expectEqualStrings("abc", list.getLast().agent_session_id.?);
+    try std.testing.expectEqualStrings("/tmp/2", list.items[0].entry.path);
+    try std.testing.expectEqualStrings("/tmp/11", list.getLast().entry.path);
+    try std.testing.expectEqualStrings("abc", list.getLast().entry.agent_session_id.?);
+    try std.testing.expectEqual(@as(u64, 12), list.getLast().order_seq);
+}
+
+test "a reopened terminal sorts back into its old grid place" {
+    // A B C D with B closed: its struct sits unspawned past the visible block.
+    // Reopening respawns it there with its remembered order_seq.
+    var s_a: SessionState = undefined;
+    var s_b: SessionState = undefined;
+    var s_c: SessionState = undefined;
+    var s_d: SessionState = undefined;
+    var s_new: SessionState = undefined;
+    testSession(&s_a, 0, 1, true, false);
+    testSession(&s_c, 2, 3, true, false);
+    testSession(&s_d, 3, 4, true, false);
+    testSession(&s_new, 4, 5, true, false); // opened after the close
+    testSession(&s_b, 1, 2, true, false); // reopened into the first free slot
+    var sessions = [_]*SessionState{ &s_a, &s_c, &s_d, &s_new, &s_b };
+
+    var views: [5]SessionViewState = undefined;
+    var render_cache = try renderer_mod.RenderCache.init(std.testing.allocator, 5);
+    defer render_cache.deinit();
+    var anim: AnimationState = undefined;
+    anim.focused_session = 0;
+    anim.previous_session = 0;
+
+    compactSessions(&sessions, &views, &render_cache, &anim);
+
+    const expected = [_]usize{ 0, 1, 2, 3, 4 }; // A B C D, then the newcomer
+    for (expected, 0..) |id, slot| try std.testing.expectEqual(id, sessions[slot].id);
+    try std.testing.expectEqual(@as(usize, 1), s_b.slot_index);
 }
 
 test "planExternalSpawnSlot expands a full current grid" {
