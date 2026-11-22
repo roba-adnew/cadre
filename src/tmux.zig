@@ -456,19 +456,19 @@ pub fn paneTty(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     return paneDisplay(allocator, persist_index, "#{pane_tty}");
 }
 
-/// `ps` rows (`pid ppid tty comm`) for EVERY process. An agent's background
-/// shells have no tty, so `paneProcessTable` can't see them. Event paths only.
-/// Caller owns; null on failure.
+/// `ps` rows (`pid ppid tty name command-line`) for EVERY process. An agent's
+/// background shells have no tty, so `paneProcessTable` can't see them. Event
+/// paths only. Caller owns; null on failure.
 pub fn allProcessTable(allocator: std.mem.Allocator) ?[]u8 {
-    return psRows(allocator, &.{ "/bin/ps", "-Ao", "pid=,ppid=,tty=,comm=" });
+    return psRows(allocator, &.{ "/bin/ps", "-ww", "-Ao", "pid=,ppid=,tty=,ucomm=,args=" });
 }
 
 fn psRows(allocator: std.mem.Allocator, argv: []const []const u8) ?[]u8 {
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = argv,
-        // The whole-machine table runs past Child.run's 50 KiB default.
-        .max_output_bytes = 1 << 20,
+        // The whole-machine table runs far past Child.run's 50 KiB default.
+        .max_output_bytes = 4 << 20,
     }) catch |err| {
         log.warn("ps failed: {}", .{err});
         return null;

@@ -1099,29 +1099,48 @@ fn foregroundHasAgent(ps_rows: []const u8) bool {
     return false;
 }
 
-const PsRow = struct { pid: []const u8, ppid: []const u8, tty: []const u8, comm: []const u8 };
+const PsRow = struct { pid: []const u8, ppid: []const u8, tty: []const u8, comm: []const u8, args: []const u8 };
 
+/// One row of `ps -Ao pid=,ppid=,tty=,ucomm=,args=`.
 fn parsePsRow(line: []const u8) ?PsRow {
     var fields = std.mem.tokenizeAny(u8, line, " \t");
     const pid = fields.next() orelse return null;
     const ppid = fields.next() orelse return null;
     const tty = fields.next() orelse return null;
-    return .{ .pid = pid, .ppid = ppid, .tty = tty, .comm = std.mem.trim(u8, fields.rest(), " \t\r") };
+    const comm = fields.next() orelse return null;
+    return .{ .pid = pid, .ppid = ppid, .tty = tty, .comm = comm, .args = std.mem.trim(u8, fields.rest(), " \t\r") };
 }
 
-/// True when an agent on `tty` has a child with no controlling terminal, given
-/// `ps -Ao pid=,ppid=,tty=,comm=` rows. Claude Code runs its shell commands
-/// that way (detached), while its MCP servers stay on the pane's tty.
+/// A child of `pid` with no controlling terminal: how Claude Code runs its
+/// shell commands (detached), while its MCP servers stay on its tty.
+fn hasDetachedChild(ps_rows: []const u8, pid: []const u8) bool {
+    var kids = std.mem.tokenizeScalar(u8, ps_rows, '\n');
+    while (kids.next()) |kid_line| {
+        const kid = parsePsRow(kid_line) orelse continue;
+        if (std.mem.eql(u8, kid.ppid, pid) and std.mem.eql(u8, kid.tty, "??")) return true;
+    }
+    return false;
+}
+
+/// True when the agent on `tty` has a shell of its own going, given
+/// `tmux.allProcessTable` rows. For a pane attached to a background session
+/// the shells belong to the session's own process, found by the id in its
+/// command line.
+// ponytail: leans on the id showing up in the session process's arguments;
+// `claude agents --json` (id -> pid) is the documented way if that changes.
 fn agentHasDetachedChild(ps_rows: []const u8, tty: []const u8) bool {
     var agents = std.mem.tokenizeScalar(u8, ps_rows, '\n');
     while (agents.next()) |agent_line| {
         const agent = parsePsRow(agent_line) orelse continue;
         if (!std.mem.eql(u8, agent.tty, tty)) continue;
-        if (AgentKind.fromComm(std.fs.path.basename(agent.comm)) == null) continue;
-        var kids = std.mem.tokenizeScalar(u8, ps_rows, '\n');
-        while (kids.next()) |kid_line| {
-            const kid = parsePsRow(kid_line) orelse continue;
-            if (std.mem.eql(u8, kid.ppid, agent.pid) and std.mem.eql(u8, kid.tty, "??")) return true;
+        if (AgentKind.fromComm(agent.comm) == null) continue;
+        if (hasDetachedChild(ps_rows, agent.pid)) return true;
+        const id = attachTarget(agent.args) orelse continue;
+        var others = std.mem.tokenizeScalar(u8, ps_rows, '\n');
+        while (others.next()) |other_line| {
+            const other = parsePsRow(other_line) orelse continue;
+            if (std.mem.indexOf(u8, other.args, id) == null) continue;
+            if (hasDetachedChild(ps_rows, other.pid)) return true;
         }
     }
     return false;
@@ -1173,26 +1192,50 @@ test "attachTarget finds the background session a pane is attached to" {
 
 test "agentHasDetachedChild sees an agent's background shell, not its MCP servers" {
     const mcp_only =
-        \\ 7653  7622 ttys031 /Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre
-        \\ 7697  7653 ttys031 /Users/me/.nvm/versions/node/v22/bin/claude
-        \\ 9462  7697 ttys031 npm exec ios-simulator-mcp
-        \\10776  9462 ttys031 node
+        \\ 7653  7622 ttys031 cadre      /Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre host /Users/me/.nvm/bin/claude
+        \\ 7697  7653 ttys031 claude     /Users/me/.nvm/bin/claude --resume c8c4a84d-f9f8-4b15-8275-074c464e058c
+        \\ 9462  7697 ttys031 node       npm exec ios-simulator-mcp
+        \\10776  9462 ttys031 node       node /Users/me/.npm/_npx/e2/node_modules/.bin/ios-simulator-mcp
     ;
     try std.testing.expect(!agentHasDetachedChild(mcp_only, "ttys031"));
     const with_shell = mcp_only ++
         \\
-        \\52206  7697 ??      /bin/zsh
-        \\52207 52206 ??      node
+        \\52206  7697 ??      zsh        /bin/zsh -c source snapshot.sh && eval 'node serve.mjs'
+        \\52207 52206 ??      node       node serve.mjs
     ;
     try std.testing.expect(agentHasDetachedChild(with_shell, "ttys031"));
     // Another pane's agent has the shell; this pane's doesn't.
     try std.testing.expect(!agentHasDetachedChild(with_shell, "ttys022"));
     // A detached process that isn't the agent's child (a daemon) doesn't count.
     try std.testing.expect(!agentHasDetachedChild(
-        \\ 7697  7653 ttys031 /Users/me/.nvm/versions/node/v22/bin/claude
-        \\63814     1 ??      /Users/me/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+        \\ 7697  7653 ttys031 claude     /Users/me/.nvm/bin/claude
+        \\63814     1 ??      claude.exe /Users/me/.nvm/lib/claude.exe daemon run
     , "ttys031"));
     try std.testing.expect(!agentHasDetachedChild("", "ttys031"));
+}
+
+test "agentHasDetachedChild follows an attached pane to its background session" {
+    const attached =
+        \\60616 60403 ttys003 zsh        /bin/zsh /Users/me/.claude/scripts/claude-hup-shim.sh attach 578a4bcb
+        \\60618 60616 ttys003 cadre      /Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre host /Users/me/.nvm/bin/claude attach 578a4bcb
+        \\60620 60618 ttys003 claude.exe /Users/me/.nvm/bin/claude attach 578a4bcb
+        \\63814     1 ??      claude.exe /Users/me/.nvm/lib/claude.exe daemon run --origin transient
+        \\63834 63814 ??      claude.exe /Users/me/.nvm/lib/claude.exe --bg-pty-host /tmp/cc-daemon-501/b0/pty/578a4bcb.sock 238 50
+        \\63858 63834 ttys026 claude.exe /Users/me/.nvm/lib/claude.exe --session-id 578a4bcb-3972-4fab-8fbe-355362cfc05f --fork-session
+        \\63903 63858 ttys026 node       npm exec ios-simulator-mcp
+    ;
+    // The session is running but has no shells of its own.
+    try std.testing.expect(!agentHasDetachedChild(attached, "ttys003"));
+    try std.testing.expect(agentHasDetachedChild(attached ++
+        \\
+        \\70823 63858 ??      zsh        /bin/zsh -c source snapshot.sh && eval 'npm run watch'
+    , "ttys003"));
+    // Another background session's shell doesn't count for this pane.
+    try std.testing.expect(!agentHasDetachedChild(attached ++
+        \\
+        \\80001 63834 ttys027 claude.exe /Users/me/.nvm/lib/claude.exe --session-id 9999aaaa-3972-4fab-8fbe-355362cfc05f
+        \\80002 80001 ??      zsh        /bin/zsh -c source snapshot.sh && eval 'npm run watch'
+    , "ttys003"));
 }
 
 test "foregroundHasAgent finds claude under a zsh wrapper, ignores background groups" {
