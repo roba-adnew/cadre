@@ -758,6 +758,27 @@ fn planExternalSpawnSlot(
     };
 }
 
+const ClosedTerminals = std.ArrayListUnmanaged(config_mod.Persistence.TerminalEntry);
+const max_closed_terminals = 10;
+
+/// Copy `entry` onto the reopen stack, dropping the oldest past the cap.
+fn pushClosedTerminal(list: *ClosedTerminals, allocator: std.mem.Allocator, entry: config_mod.Persistence.TerminalEntry) !void {
+    const path = try allocator.dupe(u8, entry.path);
+    errdefer allocator.free(path);
+    const agent_type = if (entry.agent_type) |s| try allocator.dupe(u8, s) else null;
+    errdefer if (agent_type) |s| allocator.free(s);
+    const agent_session_id = if (entry.agent_session_id) |s| try allocator.dupe(u8, s) else null;
+    errdefer if (agent_session_id) |s| allocator.free(s);
+    if (list.items.len >= max_closed_terminals) freeClosedTerminal(allocator, list.orderedRemove(0));
+    try list.append(allocator, .{ .path = path, .agent_type = agent_type, .agent_session_id = agent_session_id });
+}
+
+fn freeClosedTerminal(allocator: std.mem.Allocator, entry: config_mod.Persistence.TerminalEntry) void {
+    allocator.free(entry.path);
+    if (entry.agent_type) |s| allocator.free(s);
+    if (entry.agent_session_id) |s| allocator.free(s);
+}
+
 fn validateExternalSpawnCwd(cwd: []const u8) ?control.SpawnFailure {
     if (!std.fs.path.isAbsolute(cwd)) {
         return .{
@@ -1200,6 +1221,8 @@ const App = struct {
     pending_move: ?MoveRequest,
     /// Drag-out resolved after every window's action drain (see applyPendingDragOut).
     pending_drag_out: ?DragOutRequest,
+    /// Recently closed terminals for Cmd+Shift+T, newest last. In memory only.
+    closed_terminals: ClosedTerminals,
 
     fn focusedWindow(self: *App) *Window {
         return self.last_focused orelse self.windows.items[0];
@@ -2467,28 +2490,11 @@ const Window = struct {
         defer allocator.free(cwd_buf);
         const cwd_z: [:0]const u8 = cwd_buf[0..pending.request.cwd.len :0];
 
-        if (plan.expands_grid) {
-            var moves = collectSessionMovesCurrent(sessions, allocator) catch |err| {
-                log.warn("failed to collect external spawn grid moves: {}", .{err});
-                completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare grid expansion");
-                return;
-            };
-            defer moves.deinit(allocator);
-
-            if (app.animations_enabled) {
-                self.grid.startResize(plan.cols, plan.rows, now, self.render_width, self.render_height, moves.items) catch |err| {
-                    log.warn("failed to start external spawn grid resize: {}", .{err});
-                    self.grid.cols = plan.cols;
-                    self.grid.rows = plan.rows;
-                };
-                if (self.grid.is_resizing) {
-                    self.anim_state.mode = .GridResizing;
-                }
-            } else {
-                self.grid.cols = plan.cols;
-                self.grid.rows = plan.rows;
-            }
-        }
+        self.growGridForSpawn(plan, now) catch |err| {
+            log.warn("failed to collect external spawn grid moves: {}", .{err});
+            completeExternalSpawnFailure(pending, .spawn_failed, "failed to prepare grid expansion");
+            return;
+        };
 
         const session = sessions[plan.slot_index];
         session.ensureSpawnedFresh(cwd_z, &app.loop) catch |err| {
@@ -2505,22 +2511,102 @@ const Window = struct {
             };
         }
 
-        self.session_interaction_component.setAttention(plan.slot_index, false, now);
-        self.session_interaction_component.clearSelection(self.anim_state.focused_session);
-        self.session_interaction_component.clearSelection(plan.slot_index);
-
-        self.anim_state.previous_session = self.anim_state.focused_session;
-        self.anim_state.focused_session = plan.slot_index;
-
-        self.cell_width_pixels = @divFloor(self.render_width, @as(c_int, @intCast(self.grid.cols)));
-        self.cell_height_pixels = @divFloor(self.render_height, @as(c_int, @intCast(self.grid.rows)));
-        self.applyTerminalLayout();
+        self.focusSpawnedSlot(plan.slot_index, now);
 
         pending.completion.complete(.{ .success = .{
             .session_id = session.id,
             .slot_index = plan.slot_index,
             .window_index = app.windowIndex(self),
         } });
+    }
+
+    /// Grow the grid to `plan`'s size (animated when enabled) ahead of spawning into it.
+    fn growGridForSpawn(self: *Window, plan: ExternalSpawnPlan, now: i64) !void {
+        if (!plan.expands_grid) return;
+        const allocator = self.app.allocator;
+        var moves = try collectSessionMovesCurrent(self.sessions, allocator);
+        defer moves.deinit(allocator);
+
+        if (self.app.animations_enabled) {
+            self.grid.startResize(plan.cols, plan.rows, now, self.render_width, self.render_height, moves.items) catch |err| {
+                log.warn("failed to start spawn grid resize: {}", .{err});
+                self.grid.cols = plan.cols;
+                self.grid.rows = plan.rows;
+            };
+            if (self.grid.is_resizing) {
+                self.anim_state.mode = .GridResizing;
+            }
+        } else {
+            self.grid.cols = plan.cols;
+            self.grid.rows = plan.rows;
+        }
+    }
+
+    /// Focus a just-spawned slot and relayout for the (possibly grown) grid.
+    fn focusSpawnedSlot(self: *Window, slot_index: usize, now: i64) void {
+        self.session_interaction_component.setAttention(slot_index, false, now);
+        self.session_interaction_component.clearSelection(self.anim_state.focused_session);
+        self.session_interaction_component.clearSelection(slot_index);
+
+        self.anim_state.previous_session = self.anim_state.focused_session;
+        self.anim_state.focused_session = slot_index;
+
+        self.cell_width_pixels = @divFloor(self.render_width, @as(c_int, @intCast(self.grid.cols)));
+        self.cell_height_pixels = @divFloor(self.render_height, @as(c_int, @intCast(self.grid.rows)));
+        self.applyTerminalLayout();
+    }
+
+    /// Cmd+Shift+T: respawn the most recently closed terminal in its old
+    /// directory, resuming its agent conversation when an id was captured.
+    /// Closing killed the process, so shell scrollback and non-agent jobs
+    /// don't come back. A missing directory falls back to the default one.
+    fn reopenClosedTerminal(self: *Window, now: i64) void {
+        const app = self.app;
+        const allocator = app.allocator;
+        const entry = app.closed_terminals.getLastOrNull() orelse {
+            self.ui.showToast("No closed terminal to reopen", now);
+            return;
+        };
+        // Planned before popping so a full grid keeps the entry for later.
+        const plan = planExternalSpawnSlot(self.sessions, self.grid.cols, self.grid.rows, self.anim_state.focused_session) orelse {
+            self.ui.showToast("All terminals in use", now);
+            return;
+        };
+        _ = app.closed_terminals.pop();
+        defer freeClosedTerminal(allocator, entry);
+
+        const cwd_buf: ?[]u8 = if (entry.path.len > 0 and validateExternalSpawnCwd(entry.path) == null)
+            allocZ(allocator, entry.path) catch |err| blk: {
+                log.warn("failed to allocate reopen cwd: {}", .{err});
+                break :blk null;
+            }
+        else
+            null;
+        defer if (cwd_buf) |buf| allocator.free(buf);
+        const cwd_z: ?[:0]const u8 = if (cwd_buf) |buf| buf[0 .. buf.len - 1 :0] else null;
+
+        self.growGridForSpawn(plan, now) catch |err| {
+            log.warn("failed to collect reopen grid moves: {}", .{err});
+            self.ui.showToast("Failed to reopen terminal", now);
+            return;
+        };
+
+        const session = self.sessions[plan.slot_index];
+        setResumeCommandFromEntry(session, entry, allocator);
+        session.ensureSpawnedFresh(cwd_z, &app.loop) catch |err| {
+            log.warn("reopen spawn failed for cwd {s}: {}", .{ entry.path, err });
+            // Spawn consumes resume_cmd only on success; drop it so a later
+            // spawn on this slot doesn't resume a conversation nobody asked for.
+            if (session.resume_cmd) |cmd| {
+                allocator.free(cmd);
+                session.resume_cmd = null;
+            }
+            self.ui.showToast("Failed to reopen terminal", now);
+            return;
+        };
+        seedSessionAgentMetadataFromEntry(session, entry, allocator);
+
+        self.focusSpawnedSlot(plan.slot_index, now);
     }
 
     /// Close the terminal in `idx`, reclaim its grid slot, and relayout/animate the
@@ -2563,7 +2649,18 @@ const Window = struct {
             // preserving its view state so it returns exactly as it was.
             sessions[idx].hidden = true;
         } else {
-            sessions[idx].despawn(allocator);
+            const closed = sessions[idx];
+            if (closed.spawned) {
+                const agent_type = persistedAgentType(closed);
+                pushClosedTerminal(&app.closed_terminals, allocator, .{
+                    .path = closed.cwd_path orelse "",
+                    .agent_type = agent_type,
+                    .agent_session_id = persistedAgentSessionId(closed, agent_type),
+                }) catch |err| {
+                    log.warn("failed to remember closed terminal for reopen: {}", .{err});
+                };
+            }
+            closed.despawn(allocator);
             self.session_interaction_component.resetView(idx);
         }
         sessions[idx].markDirty();
@@ -3125,6 +3222,15 @@ const Window = struct {
                 if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_W) {
                     if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧W", now);
                     self.requestClose();
+                    return;
+                }
+
+                if (has_gui and !has_blocking_mod and has_shift and key == c.SDLK_T) {
+                    if (app.config.ui.show_hotkey_feedback) self.ui.showHotkey("⌘⇧T", now);
+                    // Same guard as Cmd+N: don't spawn mid-animation.
+                    if (self.anim_state.mode == .Full or self.anim_state.mode == .Grid) {
+                        self.reopenClosedTerminal(now);
+                    }
                     return;
                 }
 
@@ -4754,6 +4860,11 @@ pub fn run() !void {
     app.closing_window = null;
     app.pending_move = null;
     app.pending_drag_out = null;
+    app.closed_terminals = .empty;
+    defer {
+        for (app.closed_terminals.items) |entry| freeClosedTerminal(allocator, entry);
+        app.closed_terminals.deinit(allocator);
+    }
 
     // Pool sessions outlive every window (UI components reference them), so
     // this defer is registered first and runs after the windows are destroyed.
@@ -4967,6 +5078,25 @@ fn allocZ(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     @memcpy(buf[0..data.len], data);
     buf[data.len] = 0;
     return buf;
+}
+
+test "pushClosedTerminal copies entries and keeps only the newest" {
+    const allocator = std.testing.allocator;
+    var list: ClosedTerminals = .empty;
+    defer {
+        for (list.items) |entry| freeClosedTerminal(allocator, entry);
+        list.deinit(allocator);
+    }
+    // One reused buffer: entries survive its overwrites only if they were copied.
+    var buf: [16]u8 = undefined;
+    for (0..max_closed_terminals + 2) |i| {
+        const path = try std.fmt.bufPrint(&buf, "/tmp/{d}", .{i});
+        try pushClosedTerminal(&list, allocator, .{ .path = path, .agent_type = "claude", .agent_session_id = "abc" });
+    }
+    try std.testing.expectEqual(@as(usize, max_closed_terminals), list.items.len);
+    try std.testing.expectEqualStrings("/tmp/2", list.items[0].path);
+    try std.testing.expectEqualStrings("/tmp/11", list.getLast().path);
+    try std.testing.expectEqualStrings("abc", list.getLast().agent_session_id.?);
 }
 
 test "planExternalSpawnSlot expands a full current grid" {

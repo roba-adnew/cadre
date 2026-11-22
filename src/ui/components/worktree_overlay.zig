@@ -219,7 +219,8 @@ pub const WorktreeOverlayComponent = struct {
                 const has_gui = (mod & c.SDL_KMOD_GUI) != 0;
                 const has_blocking_mod = (mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL)) != 0;
 
-                if (has_gui and !has_blocking_mod and key == c.SDLK_T) {
+                // Shift excluded: Cmd+Shift+T reopens a closed terminal.
+                if (has_gui and !has_blocking_mod and (mod & c.SDL_KMOD_SHIFT) == 0 and key == c.SDLK_T) {
                     if (self.overlay.state == .Open) {
                         self.overlay.startCollapsing(host.now_ms);
                     } else {

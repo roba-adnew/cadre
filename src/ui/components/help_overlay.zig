@@ -14,6 +14,7 @@ const shortcuts = [_]Shortcut{
     .{ .key = "⌘1–⌘9/⌘0", .desc = "Jump to a grid slot" },
     .{ .key = "⌘↵", .desc = "Focus selected pane" },
     .{ .key = "⌘N", .desc = "New terminal" },
+    .{ .key = "⌘⇧T", .desc = "Reopen closed terminal" },
     .{ .key = "⌘⇧N", .desc = "New window" },
     .{ .key = "⌘⇧P", .desc = "Move terminal to a separate window" },
     .{ .key = "⌘⇧W", .desc = "Close window" },
