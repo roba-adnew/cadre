@@ -26,7 +26,8 @@ pub const AgentKind = enum {
     gemini,
 
     pub fn fromComm(comm: []const u8) ?AgentKind {
-        if (std.mem.eql(u8, comm, "claude")) return .claude;
+        // `claude.exe`: a pane attached to a background session (`claude attach`).
+        if (std.mem.eql(u8, comm, "claude") or std.mem.eql(u8, comm, "claude.exe")) return .claude;
         if (std.mem.eql(u8, comm, "codex")) return .codex;
         if (std.mem.eql(u8, comm, "gemini")) return .gemini;
         return null;
@@ -166,6 +167,10 @@ pub const SessionState = struct {
     /// i.e. Claude is running in this pane right now. Unlike `title`, this drops
     /// back to false when the shell retitles the pane after Claude exits.
     claude_title_live: bool = false,
+    /// Claude holds the pane's foreground although the title doesn't say so: a
+    /// pane attached to a background session (`claude attach`) never sets one.
+    /// Refreshed for the focused session only (runtime's ForegroundProcessCache).
+    claude_fg_live: bool = false,
     /// Agent type detected at quit time (macOS only). Set transiently before persistence save.
     agent_kind: ?AgentKind = null,
     /// Agent session UUID extracted from terminal output at quit time. Owned; freed in deinit.
@@ -410,6 +415,7 @@ pub const SessionState = struct {
             self.title = null;
         }
         self.claude_title_live = false;
+        self.claude_fg_live = false;
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -597,6 +603,7 @@ pub const SessionState = struct {
             self.title = null;
         }
         self.claude_title_live = false;
+        self.claude_fg_live = false;
         self.agent_kind = null;
         self.agent_metadata_captured = false;
 
@@ -1081,6 +1088,13 @@ test "foregroundHasAgent finds claude under a zsh wrapper, ignores background gr
         \\86602 90001 claude
     ));
     try std.testing.expect(!foregroundHasAgent(""));
+    // Claude attached to a background session: the pane holds `claude.exe attach`.
+    try std.testing.expect(foregroundHasAgent(
+        \\16402 1428 /bin/zsh
+        \\16402 16402 /bin/zsh
+        \\16402 16402 /Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre
+        \\16402 16402 /Users/me/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+    ));
 }
 
 /// Returns the AgentKind for a given PID by inspecting its process name via sysctl.

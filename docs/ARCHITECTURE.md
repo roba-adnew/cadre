@@ -296,6 +296,8 @@ PTY write() -> shell process stdin
 ```
 Claude title on the pane (OSC 2 "<glyph> <name>")
     | SessionState.claude_title_live -> SessionUiInfo.claude_live
+    | (or claude_fg_live: a claude process in the focused pane's foreground,
+    |  for panes attached to a background session, which set no title)
     v
 ComposerComponent.update (Full view, nothing covering it)
     | shows the NSTextView, SDL_StopTextInput, makeFirstResponder(text view)

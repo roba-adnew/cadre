@@ -109,6 +109,13 @@ const ForegroundProcessCache = struct {
                 session.hasForegroundProcessThorough()
             else
                 session.hasForegroundProcess();
+            // No Claude title: look for the agent itself, so the composer also
+            // shows on a pane attached to a background session. Unknown keeps
+            // the last answer.
+            // ponytail: tmux + ps spawns per refresh while a title-less pane is
+            // focused; cache #{pane_tty} per session if it shows in frame times.
+            session.claude_fg_live = !session.claude_title_live and
+                (session.agentInForeground() orelse session.claude_fg_live);
             self.last_check_ms = now_ms;
         }
         return self.value;
@@ -4301,7 +4308,9 @@ const Window = struct {
                 if (target.agentInForeground()) |agent_running| {
                     if (!agent_running) {
                         log.info("composer submit refused: no agent in session {d}'s foreground", .{submit.session});
-                        target.claude_title_live = false; // hides the box (its draft keeps the text)
+                        // Hides the box (its draft keeps the text).
+                        target.claude_title_live = false;
+                        target.claude_fg_live = false;
                         self.composer_component.returnText(target.persist_index, submit.text);
                         if (target.tmux_backed) tmux.setComposerDraft(allocator, target.persist_index, submit.text);
                         self.ui.showToast("Claude isn't running here \u{2014} kept your text", now);
