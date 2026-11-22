@@ -443,6 +443,14 @@ pub fn paneProcessTable(allocator: std.mem.Allocator, persist_index: usize) ?[]u
     return psRows(allocator, &.{ "/bin/ps", "-t", std.fs.path.basename(tty), "-o", "tpgid=,pgid=,comm=" });
 }
 
+/// `ps` rows (full command line) for every process on the persistent session's
+/// pane tty. Event paths only. Caller owns; null on failure.
+pub fn paneCommandLines(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
+    const tty = paneTty(allocator, persist_index) orelse return null;
+    defer allocator.free(tty);
+    return psRows(allocator, &.{ "/bin/ps", "-t", std.fs.path.basename(tty), "-o", "args=" });
+}
+
 /// The persistent session's pane tty (`/dev/ttys003`). Caller owns; null on failure.
 pub fn paneTty(allocator: std.mem.Allocator, persist_index: usize) ?[]u8 {
     return paneDisplay(allocator, persist_index, "#{pane_tty}");

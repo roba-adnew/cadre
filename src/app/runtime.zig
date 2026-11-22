@@ -2651,11 +2651,17 @@ const Window = struct {
         } else {
             const closed = sessions[idx];
             if (closed.spawned) {
-                const agent_type = persistedAgentType(closed);
+                // A pane attached to a background session comes back with
+                // `claude attach <id>`: the id taken from the hooks can belong
+                // to another session of the same daemon, and can't be resumed
+                // while the session runs anyway.
+                const attach_id = closed.attachedSessionId();
+                defer if (attach_id) |id| closed.allocator.free(id);
+                const agent_type: ?[]const u8 = if (attach_id != null) session_state.AgentKind.claude.name() else persistedAgentType(closed);
                 pushClosedTerminal(&app.closed_terminals, allocator, .{
                     .path = closed.cwd_path orelse "",
                     .agent_type = agent_type,
-                    .agent_session_id = persistedAgentSessionId(closed, agent_type),
+                    .agent_session_id = attach_id orelse persistedAgentSessionId(closed, agent_type),
                 }) catch |err| {
                     log.warn("failed to remember closed terminal for reopen: {}", .{err});
                 };

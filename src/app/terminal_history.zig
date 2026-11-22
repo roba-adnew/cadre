@@ -159,7 +159,13 @@ fn matchUuidAt(text: []const u8, start: usize) ?[]const u8 {
 /// returned slice and must free it.
 pub fn buildResumeCommand(allocator: std.mem.Allocator, agent_kind: AgentKind, session_id: []const u8) ![]u8 {
     return switch (agent_kind) {
-        .claude => std.fmt.allocPrint(allocator, "claude --resume {s}", .{session_id}),
+        // A conversation id is a UUID. Anything else is a background session's id
+        // (see SessionState.attachedSessionId): `--resume` refuses one that is
+        // still running, `attach` opens it either way.
+        .claude => if (session_id.len == 36)
+            std.fmt.allocPrint(allocator, "claude --resume {s}", .{session_id})
+        else
+            std.fmt.allocPrint(allocator, "claude attach {s}", .{session_id}),
         .codex => std.fmt.allocPrint(allocator, "codex resume {s}", .{session_id}),
         .gemini => std.fmt.allocPrint(allocator, "gemini --resume {s}", .{session_id}),
     };
@@ -234,13 +240,18 @@ test "buildResumeCommand produces correct commands for each agent" {
 
     const claude_cmd = try buildResumeCommand(allocator, .claude, uuid);
     defer allocator.free(claude_cmd);
-    try std.testing.expectEqualStrings("claude --resume 550e8400-e29b-41d4-a716-446655440000\n", claude_cmd);
+    try std.testing.expectEqualStrings("claude --resume 550e8400-e29b-41d4-a716-446655440000", claude_cmd);
+
+    // A background session's short id is attached to, not resumed.
+    const attach_cmd = try buildResumeCommand(allocator, .claude, "578a4bcb");
+    defer allocator.free(attach_cmd);
+    try std.testing.expectEqualStrings("claude attach 578a4bcb", attach_cmd);
 
     const codex_cmd = try buildResumeCommand(allocator, .codex, uuid);
     defer allocator.free(codex_cmd);
-    try std.testing.expectEqualStrings("codex resume 550e8400-e29b-41d4-a716-446655440000\n", codex_cmd);
+    try std.testing.expectEqualStrings("codex resume 550e8400-e29b-41d4-a716-446655440000", codex_cmd);
 
     const gemini_cmd = try buildResumeCommand(allocator, .gemini, uuid);
     defer allocator.free(gemini_cmd);
-    try std.testing.expectEqualStrings("gemini --resume 550e8400-e29b-41d4-a716-446655440000\n", gemini_cmd);
+    try std.testing.expectEqualStrings("gemini --resume 550e8400-e29b-41d4-a716-446655440000", gemini_cmd);
 }

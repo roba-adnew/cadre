@@ -926,6 +926,20 @@ pub const SessionState = struct {
         return agentHasDetachedChild(rows, std.fs.path.basename(tty));
     }
 
+    /// The id of the background session this pane is attached to (it runs
+    /// `claude attach <id>`), or null. Event paths only (spawns tmux + ps).
+    /// Caller owns the result.
+    pub fn attachedSessionId(self: *const SessionState) ?[]u8 {
+        if (!self.spawned or self.dead or !self.tmux_backed) return null;
+        const rows = tmux.paneCommandLines(self.allocator, self.persist_index) orelse return null;
+        defer self.allocator.free(rows);
+        const id = attachTarget(rows) orelse return null;
+        return self.allocator.dupe(u8, id) catch |err| {
+            log.warn("session {d}: failed to copy attach id: {}", .{ self.id, err });
+            return null;
+        };
+    }
+
     pub fn shellPid(self: *const SessionState) ?posix.pid_t {
         if (!self.spawned or self.dead) return null;
         const shell = self.shell orelse return null;
@@ -1111,6 +1125,50 @@ fn agentHasDetachedChild(ps_rows: []const u8, tty: []const u8) bool {
         }
     }
     return false;
+}
+
+/// The `<id>` of a `claude attach <id>` among `ps -o args=` rows, or null. The
+/// id ends up in a shell command, so only plain id characters are accepted.
+fn attachTarget(ps_args: []const u8) ?[]const u8 {
+    var lines = std.mem.tokenizeScalar(u8, ps_args, '\n');
+    while (lines.next()) |line| {
+        var words = std.mem.tokenizeAny(u8, line, " \t\r");
+        var prev: []const u8 = "";
+        while (words.next()) |word| {
+            defer prev = word;
+            if (!std.mem.eql(u8, word, "attach")) continue;
+            const kind = AgentKind.fromComm(std.fs.path.basename(prev)) orelse continue;
+            if (kind != .claude) continue;
+            const id = words.peek() orelse continue;
+            if (isPlainId(id)) return id;
+        }
+    }
+    return null;
+}
+
+fn isPlainId(id: []const u8) bool {
+    if (id.len == 0 or id.len > 64) return false;
+    for (id) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_') return false;
+    }
+    return true;
+}
+
+test "attachTarget finds the background session a pane is attached to" {
+    try std.testing.expectEqualStrings("578a4bcb", attachTarget(
+        \\/Users/me/Library/Application Support/Cadre/host/b1/Cadre.app/Contents/MacOS/cadre host /bin/zsh -l
+        \\/bin/zsh /Users/me/.claude/scripts/claude-hup-shim.sh -r
+        \\caffeinate -i -w 42849
+        \\/Users/me/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe attach 578a4bcb
+    ).?);
+    // An ordinary session, and a path that merely contains the word.
+    try std.testing.expectEqual(@as(?[]const u8, null), attachTarget(
+        \\/Users/me/.nvm/versions/node/v22/bin/claude --resume c8c4a84d-f9f8-4b15-8275-074c464e058c
+        \\vim attach notes.txt
+    ));
+    // Never hand shell syntax on to the resume command.
+    try std.testing.expectEqual(@as(?[]const u8, null), attachTarget("claude attach $(reboot)"));
+    try std.testing.expectEqual(@as(?[]const u8, null), attachTarget("claude attach"));
 }
 
 test "agentHasDetachedChild sees an agent's background shell, not its MCP servers" {
