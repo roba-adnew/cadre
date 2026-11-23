@@ -33,6 +33,9 @@ pub const SessionUiInfo = struct {
     /// Pixel height of the rows the PTY has (`pty_size.ws_ypixel`); the
     /// composer docks right under the last one. 0 = unknown.
     term_h_px: c_int = 0,
+    /// Claude Code's input box on this pane's screen, while it shows there
+    /// (looked for only where Claude is live).
+    prompt_box: ?PromptBox = null,
 
     /// Spawned but pulled out of the grid — listed by the hidden-terminals switcher.
     pub fn isHidden(self: SessionUiInfo) bool {
@@ -90,12 +93,14 @@ pub const prompt_gutter_cols: c_int = 2;
 /// that much higher (renderer.liftPromptRows). Pixels, not rows: the box can
 /// be part-way through a slide.
 pub const PromptLift = struct {
+    /// The pane it is on (index into the window's sessions).
+    session: usize,
     top_rule: u16,
     first: u16,
     px: c_int,
 };
 
-/// The font full-view terminals are drawn in, in render pixels.
+/// A font terminals are drawn in, in render pixels.
 pub const TermFont = struct {
     cell_w: c_int = 0,
     cell_h: c_int = 0,
@@ -124,7 +129,9 @@ pub const UiHost = struct {
     /// Grid font's pixel size (already DPI-scaled), so chrome text like the
     /// cwd bar can match the terminal text. 0 = unknown (fall back to fixed).
     grid_font_px: c_int = 0,
-    /// Unknown (all zero) for callers that never show a full-view terminal.
+    /// The fonts of grid tiles and of full view. Unknown (all zero) for
+    /// callers that never draw onto a terminal's rows.
+    grid_font: TermFont = .{},
     full_font: TermFont = .{},
     term_cols: u16,
     term_rows: u16,
@@ -137,8 +144,6 @@ pub const UiHost = struct {
 
     sessions: []const SessionUiInfo,
     theme: *const colors.Theme,
-    /// Claude Code's input box on the focused pane's screen, while it shows there.
-    prompt_box: ?PromptBox = null,
 
     mouse_x: c_int = 0,
     mouse_y: c_int = 0,

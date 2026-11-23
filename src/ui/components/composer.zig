@@ -9,19 +9,21 @@
 // Tab/Shift+Tab, PgUp/PgDn, and arrows/Enter while the box is empty) still go
 // to the terminal.
 //
-// In full view the box sits on Claude's own input box (`UiHost.prompt_box`), in
-// the terminal's font and colours, so the pane looks as Claude drew it: its
-// rules, its prompt mark and its status lines are still the terminal's. A
-// longer draft grows up over the conversation's last rows. When a dialog takes
-// the input box's place the composer hides and keys reach the dialog. A small
-// toggle on the rule under the box turns the composer off, for typing into
-// Claude's own input (its "/" and "@" menus), and on again; the box slides
-// away below the window and back, since on and off look alike once settled.
-// Off never carries over: a new input box always starts with the composer on.
+// The box sits on Claude's own input box (`SessionUiInfo.prompt_box`), in full
+// view and on the focused grid tile, in the terminal's font and colours, so the
+// pane looks as Claude drew it: its rules, its prompt mark and its status lines
+// are still the terminal's. A longer draft grows up over the conversation's
+// last rows. When a dialog takes the input box's place the composer hides and
+// keys reach the dialog. A small toggle on the rule under the box turns the
+// composer off, for typing into Claude's own input (its "/" and "@" menus),
+// and on again; the box slides away and back, since on and off look alike once
+// settled. Off never carries over: a new input box always starts with the
+// composer on. A click on the terminal leaves the keyboard in the box.
 //
-// On a grid tile the box is docked under the terminal, in a strip of its own.
-// There, clicking the terminal hands the keyboard to it and clicking the box
-// takes it back.
+// Only when no input box has ever been found (a Claude Code release may have
+// redrawn it) is the box docked instead: under the terminal in full view, in a
+// strip of its own on every Claude tile in the grid. There, clicking the
+// terminal hands the keyboard to it and clicking the box takes it back.
 
 const std = @import("std");
 const c = @import("../../c.zig");
@@ -96,10 +98,13 @@ pub fn slideFraction(from: f32, to: f32, elapsed_ms: i64) f32 {
     return from + (to - from) * easing.easeInOutCubic(t);
 }
 
-/// `rect` slid down by `slid` of the way to the window's bottom edge.
-pub fn slidRect(rect: Rect, slid: f32, window_h: c_int) Rect {
+/// `rect` slid down by `slid` of the way to `bottom` (the window's bottom
+/// edge, or its grid tile's) and cut off there, so it never shows on the tile
+/// below.
+pub fn slidRect(rect: Rect, slid: f32, bottom: c_int) Rect {
     var r = rect;
-    r.y += @intFromFloat(slid * @as(f32, @floatFromInt(@max(0, window_h - rect.y))));
+    r.y += @intFromFloat(slid * @as(f32, @floatFromInt(@max(0, bottom - rect.y))));
+    r.h = std.math.clamp(bottom - r.y, 0, rect.h);
     return r;
 }
 
@@ -257,53 +262,89 @@ fn tileStrip(host: *const types.UiHost, i: usize, h: c_int) Rect {
     };
 }
 
+/// A pane's rows as they lie on the window: where row 0 starts, the font they
+/// are drawn in, how many rows and columns show, and the edge a box sliding
+/// away stops at (the window's bottom, or the grid tile's).
+pub const Surface = struct {
+    x: c_int,
+    y: c_int,
+    bottom: c_int,
+    font: types.TermFont,
+    cols: c_int,
+    rows: c_int,
+};
+
+/// Pane `i`'s rows: the whole window in full view, its tile in the grid (laid
+/// out as renderer.renderSessionContent draws it). Null when the font isn't
+/// known.
+pub fn surfaceOf(host: *const types.UiHost, i: usize) ?Surface {
+    const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
+    if (host.view_mode != .Grid) {
+        const font = host.full_font;
+        if (font.cell_w <= 0 or font.cell_h <= 0) return null;
+        return .{ .x = pad, .y = pad, .bottom = host.window_h, .font = font, .cols = host.term_cols, .rows = host.term_rows };
+    }
+    const font = host.grid_font;
+    if (font.cell_w <= 0 or font.cell_h <= 0 or host.grid_cols == 0) return null;
+    const tile_x = @as(c_int, @intCast(i % host.grid_cols)) * host.cell_w;
+    const tile_y = @as(c_int, @intCast(i / host.grid_cols)) * host.cell_h;
+    const border = renderer_mod.grid_border_thickness;
+    // The tile's id line keeps a row's worth free under the terminal's rows.
+    const id_row = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, border)) cwd_bar_metrics.reservedHeight(host.ui_scale, border) else 0;
+    return .{
+        .x = tile_x + pad,
+        .y = tile_y + pad,
+        .bottom = tile_y + host.cell_h - dpi.scale(border, host.ui_scale),
+        .font = font,
+        .cols = @divFloor(host.cell_w - pad * 2, font.cell_w),
+        .rows = @divFloor(host.cell_h - pad * 2 - id_row, font.cell_h),
+    };
+}
+
 /// Rows of the box sitting on Claude's input box `spot`, for `content_h` px of
 /// text: at least the rows Claude's own input has (to cover them), at most 40%
-/// of the screen or what leaves a row above for the box's rule. Past that the
-/// text scrolls.
-pub fn inlineRows(host: *const types.UiHost, spot: PromptBox, content_h: c_int) c_int {
-    const cell_h = @max(1, host.full_font.cell_h);
+/// of the pane's rows or what leaves a row above for the box's rule. Past that
+/// the text scrolls.
+pub fn inlineRows(surface: Surface, spot: PromptBox, content_h: c_int) c_int {
+    const cell_h = @max(1, surface.font.cell_h);
     const own: c_int = spot.textRows();
     const wanted = @divFloor(content_h + @divFloor(cell_h, 2), cell_h); // to the nearest row
-    const room: c_int = @min(@divFloor(@as(c_int, host.term_rows) * 2, 5), @as(c_int, spot.last));
+    const room: c_int = @min(@divFloor(surface.rows * 2, 5), @as(c_int, spot.last));
     return @max(own, @min(wanted, room), 1);
 }
 
 /// The box sitting on Claude's input box: `rows` rows ending on that box's
-/// last row, right of the prompt mark, as wide as the terminal's columns.
-pub fn inlineRect(host: *const types.UiHost, spot: PromptBox, rows: c_int) Rect {
-    const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
-    const font = host.full_font;
+/// last row, right of the prompt mark, as wide as the pane's columns.
+pub fn inlineRect(surface: Surface, spot: PromptBox, rows: c_int) Rect {
+    const font = surface.font;
     const gutter = types.prompt_gutter_cols * font.cell_w;
     return .{
-        .x = pad + gutter,
-        .y = pad + (@as(c_int, spot.last) + 1 - rows) * font.cell_h,
-        .w = @max(0, @as(c_int, host.term_cols) * font.cell_w - gutter),
+        .x = surface.x + gutter,
+        .y = surface.y + (@as(c_int, spot.last) + 1 - rows) * font.cell_h,
+        .w = @max(0, surface.cols * font.cell_w - gutter),
         .h = rows * font.cell_h,
     };
 }
 
 /// How far the box `rect` (wherever a slide has it) reaches above the first
-/// row of Claude's input box, for the renderer to move that box's rule and
-/// prompt mark up with it (null when it doesn't).
-pub fn promptLift(host: *const types.UiHost, spot: PromptBox, rect: Rect) ?types.PromptLift {
-    const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
-    const px = pad + @as(c_int, spot.first) * host.full_font.cell_h - rect.y;
+/// row of Claude's input box in pane `session`, for the renderer to move that
+/// box's rule and prompt mark up with it (null when it doesn't).
+pub fn promptLift(surface: Surface, spot: PromptBox, rect: Rect, session: usize) ?types.PromptLift {
+    const px = surface.y + @as(c_int, spot.first) * surface.font.cell_h - rect.y;
     if (px <= 0) return null;
-    return .{ .top_rule = spot.top_rule, .first = spot.first, .px = px };
+    return .{ .session = session, .top_rule = spot.top_rule, .first = spot.first, .px = px };
 }
 
 /// The toggle's place: on the rule under Claude's input box, one cell in from
 /// its right end (where the rule above carries the session's name). Null on a
-/// terminal too narrow for it.
-pub fn toggleRect(host: *const types.UiHost, spot: PromptBox) ?Rect {
-    const font = host.full_font;
-    const col = @as(c_int, host.term_cols) - 1 - toggle_cells;
+/// pane too narrow for it.
+pub fn toggleRect(surface: Surface, spot: PromptBox) ?Rect {
+    const font = surface.font;
+    const col = surface.cols - 1 - toggle_cells;
     if (col < types.prompt_gutter_cols) return null;
-    const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     return .{
-        .x = pad + col * font.cell_w,
-        .y = pad + (@as(c_int, spot.last) + 1) * font.cell_h,
+        .x = surface.x + col * font.cell_w,
+        .y = surface.y + (@as(c_int, spot.last) + 1) * font.cell_h,
         .w = toggle_cells * font.cell_w,
         .h = font.cell_h,
     };
@@ -349,7 +390,7 @@ pub const ComposerComponent = struct {
     visible: bool = false,
     /// Showing on a grid tile (vs full view); see `gridOverlay`.
     in_grid: bool = false,
-    /// Showing on Claude's own input box (full view), not docked.
+    /// Showing on Claude's own input box, not docked.
     inline_mode: bool = false,
     /// Claude's input box in the focused pane, where it was last seen.
     spot: ?PromptBox = null,
@@ -365,6 +406,8 @@ pub const ComposerComponent = struct {
     /// has ever been found (`fallbackDock`).
     no_spot_since_ms: ?i64 = null,
     fallback_pending: bool = false,
+    /// The fallback is on: boxes are docked, and Claude tiles keep a strip.
+    fallback_docked: bool = false,
     /// Turned off with the toggle, to type into Claude's own input.
     user_hidden: bool = false,
     /// How far the box is slid away (`slideFraction`): 1 once turned off.
@@ -374,6 +417,8 @@ pub const ComposerComponent = struct {
     animate: bool = true,
     /// Where the toggle is drawn; null when Claude's input box isn't up.
     toggle_rect: ?Rect = null,
+    /// Size of the font the toggle's label is set in (the pane's).
+    toggle_px: c_int = 0,
     toggle_tex: ?search_utils.TextTex = null,
     toggle_key: ?ToggleKey = null,
     /// How far the box reaches above Claude's input box (`promptLift`).
@@ -428,8 +473,8 @@ pub const ComposerComponent = struct {
         none,
         /// Docked at the bottom of this area (a grid tile, or the window).
         docked: Rect,
-        /// On Claude's own input box.
-        on_prompt: PromptBox,
+        /// On Claude's own input box in the focused pane.
+        on_prompt: struct { spot: PromptBox, surface: Surface },
     };
 
     const Slide = struct { from: f32, to: f32, start_ms: i64 };
@@ -609,7 +654,7 @@ pub const ComposerComponent = struct {
         }
         const id_w = self.idWidthPx(host.focused_session);
         const in_grid = host.view_mode == .Grid;
-        const placement = self.place(host, in_grid);
+        const placement = self.place(host);
         var rect = self.boxRect(host, placement, id_w) orelse self.rect;
         const on_prompt = placement == .on_prompt;
         const show = placement != .none and !self.covered(host, rect);
@@ -633,7 +678,7 @@ pub const ComposerComponent = struct {
             self.first_frame.markTransition();
             log.info("composer {s} (session {d})", .{ if (show) "shown" else "hidden", host.focused_session });
             if (show) {
-                self.applyStyle(view, host, on_prompt);
+                self.applyStyle(view, host, placement);
                 self.applyTheme(view, host, on_prompt);
                 self.bindSession(view, host);
                 view.setHidden(false);
@@ -659,7 +704,7 @@ pub const ComposerComponent = struct {
                 self.syncFocus(view, host);
             }
             // After the focus sync, so the tint follows a focus change the same frame.
-            self.applyStyle(view, host, on_prompt);
+            self.applyStyle(view, host, placement);
             self.applyTheme(view, host, on_prompt);
             view.setFrame(rect, host.window_w, host.window_h);
             self.content_h = view.contentHeightPx(host.window_h);
@@ -673,12 +718,12 @@ pub const ComposerComponent = struct {
         self.inline_mode = self.visible and on_prompt;
         // The renderer redraws the terminal's rows around a taller box, so a
         // change needs a frame even when the terminal itself hasn't changed.
-        const lift = if (self.inline_mode) promptLift(host, placement.on_prompt, rect) else null;
+        const lift = if (self.inline_mode) promptLift(placement.on_prompt.surface, placement.on_prompt.spot, rect, host.focused_session) else null;
         if (!std.meta.eql(lift, self.lift)) self.first_frame.markTransition();
         self.lift = lift;
         // Docked in full view: the runtime shrinks the focused PTY by this. On
-        // Claude's input box nothing is given up, and grid tiles are sized
-        // from `gridReservePx` instead.
+        // Claude's input box nothing is given up, and docked grid tiles are
+        // sized from `gridReservePx` instead.
         const reserve: c_int = if (self.visible and !in_grid and !on_prompt) self.box_h + dpi.scale(status_gap_pt, host.ui_scale) else 0;
         if (reserve != self.reported_h) {
             out.append(.{ .SetComposerHeight = reserve }) catch |err| {
@@ -690,22 +735,31 @@ pub const ComposerComponent = struct {
     }
 
     /// Where the box goes this frame, if anywhere.
-    fn place(self: *ComposerComponent, host: *const types.UiHost, in_grid: bool) Placement {
+    fn place(self: *ComposerComponent, host: *const types.UiHost) Placement {
         const live = shouldShow(host);
-        const spot = if (live and !in_grid) self.trackSpot(host) else blk: {
+        // The focused pane's rows with Claude's input box on them, if it is up.
+        const on: ?@FieldType(Placement, "on_prompt") = blk: {
+            if (live) {
+                if (surfaceOf(host, host.focused_session)) |surface| {
+                    self.toggle_px = surface.font.px;
+                    const spot = self.trackSpot(host, surface) orelse break :blk null;
+                    break :blk .{ .spot = spot, .surface = surface };
+                }
+            }
             self.spot = null;
+            self.spot_held = false;
             break :blk null;
         };
-        self.toggle_rect = if (spot) |box| toggleRect(host, box) else null;
-        const dock_anyway = live and !in_grid and spot == null and self.fallbackDock(host);
-        if (!live or in_grid or spot != null) {
+        self.toggle_rect = if (on) |found| toggleRect(found.surface, found.spot) else null;
+        const dock_anyway = live and on == null and self.fallbackDock(host);
+        if (!live or on != null) {
             self.no_spot_since_ms = null;
             self.fallback_pending = false;
         }
         if (!live) return .none;
         // Turned off, the box stays up until it has slid away.
-        if (spot) |box| return if (self.user_hidden and self.slid >= 1) .none else .{ .on_prompt = box };
-        if (!in_grid and !dock_anyway) return .none; // a dialog has the input box's place
+        if (on) |found| return if (self.user_hidden and self.slid >= 1) .none else .{ .on_prompt = found };
+        if (!dock_anyway) return .none; // a dialog has the input box's place
         return if (dockArea(host)) |area| .{ .docked = area } else .none;
     }
 
@@ -713,20 +767,23 @@ pub const ComposerComponent = struct {
         return switch (placement) {
             .none => null,
             .docked => |area| placeBox(host, composerRect(area, self.content_h, host.ui_scale), id_w),
-            .on_prompt => |spot| slidRect(inlineRect(host, spot, inlineRows(host, spot, self.content_h)), self.slid, host.window_h),
+            .on_prompt => |on| slidRect(inlineRect(on.surface, on.spot, inlineRows(on.surface, on.spot, self.content_h)), self.slid, on.surface.bottom),
         };
     }
 
     /// Claude's input box in the focused pane: where it is now, or where it
     /// was until `spot_grace_ms` ago.
-    fn trackSpot(self: *ComposerComponent, host: *const types.UiHost) ?PromptBox {
+    fn trackSpot(self: *ComposerComponent, host: *const types.UiHost, surface: Surface) ?PromptBox {
         self.spot_held = false;
-        if (host.full_font.cell_w <= 0 or host.full_font.cell_h <= 0) return null;
-        const key = host.sessions[host.focused_session].persist_index;
-        if (host.prompt_box) |box| {
+        const info = host.sessions[host.focused_session];
+        const key = info.persist_index;
+        // A box that runs past the rows on show isn't where its rows say: the
+        // pane is between two sizes.
+        const found = if (info.prompt_box) |box| (if (@as(c_int, box.last) + 1 < surface.rows) box else null) else null;
+        if (found) |box| {
             // Off lasts only for the input box it was turned off on: another
-            // pane's, or this one's again after a dialog or a trip to the
-            // grid, starts with the composer showing.
+            // pane's, or this one's again after a dialog or a change of view,
+            // starts with the composer showing.
             if (self.spot == null or self.spot_key != key) {
                 self.user_hidden = false;
                 self.slid = 0;
@@ -736,6 +793,7 @@ pub const ComposerComponent = struct {
             self.spot_ms = host.now_ms;
             self.spot_key = key;
             self.spot_seen = true;
+            self.fallback_docked = false;
             return box;
         }
         const held = self.spot orelse return null;
@@ -747,19 +805,21 @@ pub const ComposerComponent = struct {
         return null;
     }
 
-    /// Full view, Claude live, its input box not on screen. Normally a dialog
-    /// has taken the box's place and it will be back, so there is nothing to
-    /// show. But while no input box has ever been found this run (a Claude
-    /// Code release may have redrawn it), dock under the terminal as the
-    /// composer used to, after a pause for a starting Claude to draw.
+    /// Claude live in the focused pane, its input box not on screen. Normally
+    /// a dialog has taken the box's place and it will be back, so there is
+    /// nothing to show. But while no input box has ever been found this run (a
+    /// Claude Code release may have redrawn it), dock the box as the composer
+    /// used to, after a pause for a starting Claude to draw.
     /// ponytail: one flag for the whole run; a pane running a Claude that draws
     /// its box differently gets no composer once another pane's was found.
     fn fallbackDock(self: *ComposerComponent, host: *const types.UiHost) bool {
         if (self.spot_seen) return false;
+        if (self.fallback_docked) return true;
         const since = self.no_spot_since_ms orelse host.now_ms;
         self.no_spot_since_ms = since;
         self.fallback_pending = host.now_ms - since < fallback_delay_ms;
-        return !self.fallback_pending;
+        self.fallback_docked = !self.fallback_pending;
+        return self.fallback_docked;
     }
 
     fn overToggle(self: *const ComposerComponent, x: c_int, y: c_int) bool {
@@ -772,14 +832,15 @@ pub const ComposerComponent = struct {
         return self.lift;
     }
 
-    /// The box's font and spacing: the terminal's on Claude's input box, the
+    /// The box's font and spacing: the pane's on Claude's input box, the
     /// system's in a docked box.
-    fn applyStyle(self: *ComposerComponent, view: *ComposerView, host: *const types.UiHost, on_prompt: bool) void {
+    fn applyStyle(self: *ComposerComponent, view: *ComposerView, host: *const types.UiHost, placement: Placement) void {
         const cache = self.root.assets.font_cache;
+        const font: ?types.TermFont = if (placement == .on_prompt) placement.on_prompt.surface.font else null;
         const key = StyleKey{
-            .on_prompt = on_prompt,
-            .font = if (on_prompt) host.full_font else .{},
-            .window_h = if (on_prompt) host.window_h else 0,
+            .on_prompt = font != null,
+            .font = font orelse .{},
+            .window_h = if (font != null) host.window_h else 0,
             .font_generation = if (cache) |fonts| fonts.generation else 0,
         };
         if (self.style_key) |prev| {
@@ -787,11 +848,11 @@ pub const ComposerComponent = struct {
         }
         self.style_key = key;
         const font_path: []const u8 = if (cache) |fonts| fonts.regular_path orelse "" else "";
-        view.setStyle(if (on_prompt) .{ .terminal = .{
+        view.setStyle(if (font) |f| .{ .terminal = .{
             .font_name = std.fs.path.stem(font_path),
-            .font_px = host.full_font.px,
-            .cell_h = host.full_font.cell_h,
-            .ascent = host.full_font.ascent,
+            .font_px = f.px,
+            .cell_h = f.cell_h,
+            .ascent = f.ascent,
             .render_h = host.window_h,
         } } else .{ .docked = .{ .font_pt = font_pt } });
     }
@@ -915,15 +976,17 @@ pub const ComposerComponent = struct {
     /// Pixels grid tile `i`'s PTY gives up for its box (`tileReservePx`,
     /// applied by layout.reservedGridSize).
     pub fn gridReservePx(self: *const ComposerComponent, host: *const types.UiHost, i: usize) c_int {
+        // On Claude's input box a tile gives up nothing.
+        if (!self.fallback_docked) return 0;
         return tileReservePx(host, i, self.liveBox());
     }
 
     fn liveBox(self: *const ComposerComponent) ?LiveBox {
-        return if (self.view != null and self.visible and self.in_grid) .{ .session = self.session, .h = self.box_h } else null;
+        return if (self.view != null and self.visible and self.in_grid and !self.inline_mode) .{ .session = self.session, .h = self.box_h } else null;
     }
 
     fn tileBoxH(self: *const ComposerComponent, host: *const types.UiHost, i: usize) c_int {
-        if (self.view == null) return 0;
+        if (self.view == null or !self.fallback_docked) return 0;
         return tileBoxPx(host, i, self.liveBox());
     }
 
@@ -948,7 +1011,8 @@ pub const ComposerComponent = struct {
         const line = host.theme.chromeBorder();
         // Unfocused Claude tiles show an empty strip where their box goes; a
         // click there focuses the tile and the live box moves in.
-        if (host.view_mode == .Grid) {
+        if (host.view_mode == .Grid and !self.fallback_docked) self.drawInlinePreviews(renderer, host, assets);
+        if (host.view_mode == .Grid and self.fallback_docked) {
             const fill = host.theme.surface(1);
             for (host.sessions, 0..) |_, i| {
                 if (self.visible and i == self.session) continue;
@@ -976,14 +1040,14 @@ pub const ComposerComponent = struct {
         const hover = host.mouse_has_position and geom.containsPoint(rect, host.mouse_x, host.mouse_y);
         // Off stands out: the keyboard is in Claude's input, not the composer.
         const color = if (hover) theme.foreground else if (self.user_hidden) theme.accent else theme.chromeTextDim();
-        const key = ToggleKey{ .hidden = self.user_hidden, .hover = hover, .px = host.full_font.px, .color = color };
+        const key = ToggleKey{ .hidden = self.user_hidden, .hover = hover, .px = self.toggle_px, .color = color };
         const fresh = if (self.toggle_key) |prev| !std.meta.eql(prev, key) else true;
         if (fresh) {
             if (self.toggle_tex) |old| c.SDL_DestroyTexture(old.tex);
             self.toggle_tex = null;
             self.toggle_key = key;
             const cache = assets.font_cache orelse return;
-            const fonts = cache.get(host.full_font.px) catch |err| {
+            const fonts = cache.get(self.toggle_px) catch |err| {
                 log.warn("no font for the composer toggle: {}", .{err});
                 return;
             };
@@ -1003,6 +1067,49 @@ pub const ComposerComponent = struct {
             .w = @floatFromInt(tex.w),
             .h = @floatFromInt(tex.h),
         });
+    }
+
+    /// Grid: a tile's unsent draft while the box is on another tile, written
+    /// on that tile's own prompt row where the box would put it, so selecting
+    /// another tile doesn't make it vanish.
+    fn drawInlinePreviews(self: *ComposerComponent, renderer: *c.SDL_Renderer, host: *const types.UiHost, assets: *types.UiAssets) void {
+        const cache = assets.font_cache orelse return;
+        const bg = host.theme.background;
+        const fg = host.theme.foreground;
+        for (host.sessions, 0..) |info, i| {
+            // The focused tile shows the box itself, or Claude's input when it is off.
+            if (i == host.focused_session and (self.visible or self.user_hidden)) continue;
+            if (!info.spawned or info.dead or info.hidden or !info.claude_live) continue;
+            const spot = info.prompt_box orelse continue;
+            const text = firstLine(self.drafts.get(info.persist_index) orelse continue);
+            if (text.len == 0) continue;
+            const surface = surfaceOf(host, i) orelse continue;
+            if (@as(c_int, spot.last) + 1 >= surface.rows) continue;
+            const row = inlineRect(surface, .{ .top_rule = spot.top_rule, .first = spot.first, .last = spot.first }, 1);
+            const fonts = cache.get(surface.font.px) catch |err| {
+                log.warn("no font for a tile's draft preview: {}", .{err});
+                continue;
+            };
+            const text_surface = c.TTF_RenderText_Blended(fonts.regular, text.ptr, text.len, .{ .r = fg.r, .g = fg.g, .b = fg.b, .a = 255 }) orelse continue;
+            defer c.SDL_DestroySurface(text_surface);
+            const texture = c.SDL_CreateTextureFromSurface(renderer, text_surface) orelse continue;
+            defer c.SDL_DestroyTexture(texture);
+            var w: f32 = 0;
+            var h: f32 = 0;
+            _ = c.SDL_GetTextureSize(texture, &w, &h);
+            _ = c.SDL_SetRenderDrawColor(renderer, bg.r, bg.g, bg.b, 255);
+            _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(row.x), .y = @floatFromInt(row.y), .w = @floatFromInt(row.w), .h = @floatFromInt(row.h) });
+            // A long first line is cut at the tile's last column.
+            const clip = c.SDL_Rect{ .x = row.x, .y = row.y, .w = row.w, .h = row.h };
+            _ = c.SDL_SetRenderClipRect(renderer, &clip);
+            _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
+                .x = @floatFromInt(row.x),
+                .y = @as(f32, @floatFromInt(row.y)) + (@as(f32, @floatFromInt(row.h)) - h) / 2,
+                .w = w,
+                .h = h,
+            });
+            _ = c.SDL_SetRenderClipRect(renderer, null);
+        }
     }
 
     /// An unfocused tile's unsent draft, shown read-only in its strip where the
@@ -1235,37 +1342,88 @@ test "on Claude's input box: the box covers its text rows and grows upward" {
     host.term_rows = 40;
     host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
     const pad = renderer_mod.terminal_padding;
+    const pane = surfaceOf(&host, 0) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(Surface{ .x = pad, .y = pad, .bottom = 600, .font = host.full_font, .cols = 80, .rows = 40 }, pane);
     // Rule on row 30, empty prompt on row 31, rule on row 32.
     const spot = PromptBox{ .top_rule = 30, .first = 31, .last = 31 };
 
     // One line of text (or none yet): exactly Claude's prompt row, right of its mark.
-    try testing.expectEqual(@as(c_int, 1), inlineRows(&host, spot, 0));
-    try testing.expectEqual(@as(c_int, 1), inlineRows(&host, spot, 21)); // a pixel of rounding
-    const one = inlineRect(&host, spot, 1);
+    try testing.expectEqual(@as(c_int, 1), inlineRows(pane, spot, 0));
+    try testing.expectEqual(@as(c_int, 1), inlineRows(pane, spot, 21)); // a pixel of rounding
+    const one = inlineRect(pane, spot, 1);
     try testing.expectEqual(Rect{ .x = pad + 2 * 10, .y = pad + 31 * 20, .w = 78 * 10, .h = 20 }, one);
-    try testing.expect(promptLift(&host, spot, one) == null);
+    try testing.expect(promptLift(pane, spot, one, 0) == null);
 
     // Three lines: same bottom edge, two rows taller, and the rule moves up two.
-    try testing.expectEqual(@as(c_int, 3), inlineRows(&host, spot, 60));
-    const three = inlineRect(&host, spot, 3);
+    try testing.expectEqual(@as(c_int, 3), inlineRows(pane, spot, 60));
+    const three = inlineRect(pane, spot, 3);
     try testing.expectEqual(one.y + one.h, three.y + three.h);
     try testing.expectEqual(@as(c_int, pad + 29 * 20), three.y);
-    try testing.expectEqual(types.PromptLift{ .top_rule = 30, .first = 31, .px = 2 * 20 }, promptLift(&host, spot, three).?);
+    try testing.expectEqual(types.PromptLift{ .session = 7, .top_rule = 30, .first = 31, .px = 2 * 20 }, promptLift(pane, spot, three, 7).?);
 
-    // A long draft stops at 40% of the screen's rows; the rest scrolls.
-    try testing.expectEqual(@as(c_int, 16), inlineRows(&host, spot, 60 * 20));
+    // A long draft stops at 40% of the pane's rows; the rest scrolls.
+    try testing.expectEqual(@as(c_int, 16), inlineRows(pane, spot, 60 * 20));
     // Near the top of a short screen: a row is left above for the rule.
-    try testing.expectEqual(@as(c_int, 2), inlineRows(&host, .{ .top_rule = 1, .first = 2, .last = 2 }, 60 * 20));
+    try testing.expectEqual(@as(c_int, 2), inlineRows(pane, .{ .top_rule = 1, .first = 2, .last = 2 }, 60 * 20));
 
     // Claude's own input already has three rows of text: cover them all.
     const grown = PromptBox{ .top_rule = 28, .first = 29, .last = 31 };
-    try testing.expectEqual(@as(c_int, 3), inlineRows(&host, grown, 0));
-    try testing.expectEqual(@as(c_int, pad + 29 * 20), inlineRect(&host, grown, 3).y);
-    try testing.expect(promptLift(&host, grown, inlineRect(&host, grown, 3)) == null);
-    try testing.expectEqual(@as(c_int, 20), promptLift(&host, grown, inlineRect(&host, grown, 4)).?.px);
+    try testing.expectEqual(@as(c_int, 3), inlineRows(pane, grown, 0));
+    try testing.expectEqual(@as(c_int, pad + 29 * 20), inlineRect(pane, grown, 3).y);
+    try testing.expect(promptLift(pane, grown, inlineRect(pane, grown, 3), 0) == null);
+    try testing.expectEqual(@as(c_int, 20), promptLift(pane, grown, inlineRect(pane, grown, 4), 0).?.px);
 }
 
-test "the toggle's slide: the box drops below the window and comes back" {
+test "on a grid tile the box sits on that tile's rows, in the grid font" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true },
+        .{ .dead = false, .spawned = true, .claude_live = true },
+        .{ .dead = false, .spawned = true, .claude_live = true },
+    };
+    var host = testHost(&sessions);
+    host.view_mode = .Grid;
+    host.grid_cols = 2;
+    host.grid_rows = 2;
+    host.cell_w = 400;
+    host.cell_h = 300;
+    host.grid_font = .{ .cell_w = 5, .cell_h = 10, .px = 8, .ascent = 8 };
+    const pad = renderer_mod.terminal_padding;
+    const border = renderer_mod.grid_border_thickness;
+    const id_row = cwd_bar_metrics.reservedHeight(1.0, border);
+
+    // Tile 2 is the second row's first: its rows start a padding in from its
+    // corner and stop above the id line's row.
+    const tile = surfaceOf(&host, 2) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(c_int, pad), tile.x);
+    try testing.expectEqual(@as(c_int, 300 + pad), tile.y);
+    try testing.expectEqual(@as(c_int, 600 - border), tile.bottom);
+    try testing.expectEqual(@divFloor(400 - pad * 2, 5), tile.cols);
+    try testing.expectEqual(@divFloor(300 - pad * 2 - id_row, 10), tile.rows);
+    try testing.expectEqual(host.grid_font, tile.font);
+    // Tile 1 is the first row's second.
+    try testing.expectEqual(@as(c_int, 400 + pad), surfaceOf(&host, 1).?.x);
+
+    const spot = PromptBox{ .top_rule = 20, .first = 21, .last = 21 };
+    const box = inlineRect(tile, spot, 2);
+    try testing.expectEqual(Rect{ .x = pad + 2 * 5, .y = 300 + pad + 20 * 10, .w = (tile.cols - 2) * 5, .h = 20 }, box);
+    try testing.expectEqual(@as(c_int, 10), promptLift(tile, spot, box, 2).?.px);
+    const toggle = toggleRect(tile, spot) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(c_int, 300 + pad + 22 * 10), toggle.y);
+    try testing.expectEqual(pad + (tile.cols - 1) * 5, toggle.x + toggle.w);
+
+    // Turned off, it slides to the tile's bottom edge and is cut off there,
+    // never showing on the tile below.
+    const half = slidRect(box, 0.5, tile.bottom);
+    try testing.expect(half.y > box.y);
+    try testing.expect(half.y + half.h <= tile.bottom);
+    try testing.expectEqual(@as(c_int, 0), slidRect(box, 1, tile.bottom).h);
+
+    // No grid font known (a caller that never draws on tiles): nothing to sit on.
+    host.grid_font = .{};
+    try testing.expect(surfaceOf(&host, 2) == null);
+}
+
+test "the toggle's slide: the box drops out of its pane and comes back" {
     try testing.expectEqual(@as(f32, 0), slideFraction(0, 1, 0));
     try testing.expectEqual(@as(f32, 1), slideFraction(0, 1, slide_ms));
     try testing.expectEqual(@as(f32, 1), slideFraction(0, 1, slide_ms * 10));
@@ -1276,12 +1434,11 @@ test "the toggle's slide: the box drops below the window and comes back" {
     try testing.expect(slideFraction(0.25, 0, @divFloor(slide_ms, 8)) > 0);
     try testing.expectEqual(@as(f32, 1), slideFraction(1, 1, 0)); // nowhere to go
 
-    // In place at 0; at 1 its top is on the window's bottom edge, so none of it shows.
+    // In place at 0; at 1 its top is on the bottom edge, so none of it shows.
     const box = Rect{ .x = 28, .y = 500, .w = 700, .h = 60 };
     try testing.expectEqual(box, slidRect(box, 0, 600));
-    try testing.expectEqual(@as(c_int, 550), slidRect(box, 0.5, 600).y);
-    try testing.expectEqual(@as(c_int, 600), slidRect(box, 1, 600).y);
-    try testing.expectEqual(box.h, slidRect(box, 1, 600).h);
+    try testing.expectEqual(Rect{ .x = 28, .y = 550, .w = 700, .h = 50 }, slidRect(box, 0.5, 600));
+    try testing.expectEqual(Rect{ .x = 28, .y = 600, .w = 700, .h = 0 }, slidRect(box, 1, 600));
 
     // Sliding, a taller box's rule and mark follow it down pixel by pixel until
     // they are back where Claude drew them.
@@ -1291,14 +1448,15 @@ test "the toggle's slide: the box drops below the window and comes back" {
     host.term_rows = 40;
     host.window_h = 1000;
     host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
+    const pane = surfaceOf(&host, 0) orelse return error.TestUnexpectedResult;
     const spot = PromptBox{ .top_rule = 20, .first = 21, .last = 21 };
-    const rest = inlineRect(&host, spot, 3);
-    try testing.expectEqual(@as(c_int, 40), promptLift(&host, spot, rest).?.px);
+    const rest = inlineRect(pane, spot, 3);
+    try testing.expectEqual(@as(c_int, 40), promptLift(pane, spot, rest, 0).?.px);
     var moved = rest;
     moved.y += 25;
-    try testing.expectEqual(@as(c_int, 15), promptLift(&host, spot, moved).?.px);
+    try testing.expectEqual(@as(c_int, 15), promptLift(pane, spot, moved, 0).?.px);
     moved.y += 25;
-    try testing.expect(promptLift(&host, spot, moved) == null);
+    try testing.expect(promptLift(pane, spot, moved, 0) == null);
 
     // The card: the terminal's background in place, lighter once it is moving.
     const theme = colors.Theme.default();
@@ -1317,51 +1475,95 @@ test "turning the composer off lasts only for the input box that is up" {
     host.term_rows = 40;
     host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
     const box = PromptBox{ .top_rule = 30, .first = 31, .last = 31 };
-    host.prompt_box = box;
+    sessions[0].prompt_box = box;
+    sessions[1].prompt_box = box;
     var composer = ComposerComponent{ .allocator = testing.allocator, .window = undefined, .root = undefined, .view = null };
 
-    try testing.expect(composer.place(&host, false) == .on_prompt);
+    try testing.expect(composer.place(&host) == .on_prompt);
     composer.user_hidden = true;
     composer.slid = 1;
-    try testing.expect(composer.place(&host, false) == .none);
+    try testing.expect(composer.place(&host) == .none);
     try testing.expect(composer.toggle_rect != null); // still there to turn it back on
 
     // A dialog takes the input box's place for longer than a redraw, then closes.
-    host.prompt_box = null;
+    sessions[0].prompt_box = null;
     host.now_ms = spot_grace_ms + 1;
-    try testing.expect(composer.place(&host, false) == .none);
+    try testing.expect(composer.place(&host) == .none);
     try testing.expect(composer.toggle_rect == null);
-    host.prompt_box = box;
-    try testing.expect(composer.place(&host, false) == .on_prompt);
+    sessions[0].prompt_box = box;
+    try testing.expect(composer.place(&host) == .on_prompt);
     try testing.expect(!composer.user_hidden);
 
-    // Another pane's input box, and this pane's again after a look at the grid.
+    // Another pane's input box, and this pane's again after the view changed
+    // (the box is away while the grid animates in or out).
     composer.user_hidden = true;
     composer.slid = 1;
     host.focused_session = 1;
-    try testing.expect(composer.place(&host, false) == .on_prompt);
+    try testing.expect(composer.place(&host) == .on_prompt);
     composer.user_hidden = true;
     composer.slid = 1;
-    host.view_mode = .Grid;
-    _ = composer.place(&host, true);
+    host.view_mode = .Collapsing;
+    try testing.expect(composer.place(&host) == .none);
     host.view_mode = .Full;
-    try testing.expect(composer.place(&host, false) == .on_prompt);
+    try testing.expect(composer.place(&host) == .on_prompt);
     try testing.expectEqual(@as(f32, 0), composer.slid);
+}
+
+test "the box is found by its place among the rows on show, and docks only if never found" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true },
+        .{ .dead = false, .spawned = true, .claude_live = true },
+    };
+    var host = testHost(&sessions);
+    host.view_mode = .Grid;
+    host.grid_cols = 2;
+    host.cell_w = 400;
+    host.cell_h = 600;
+    host.grid_font = .{ .cell_w = 5, .cell_h = 10, .px = 8, .ascent = 8 };
+    var composer = ComposerComponent{ .allocator = testing.allocator, .window = undefined, .root = undefined, .view = null };
+    const rows = (surfaceOf(&host, 0) orelse return error.TestUnexpectedResult).rows;
+
+    // No input box yet: nothing for three seconds, then the docked strips.
+    try testing.expect(composer.place(&host) == .none);
+    try testing.expectEqual(@as(c_int, 0), composer.gridReservePx(&host, 1));
+    host.now_ms = fallback_delay_ms;
+    try testing.expect(composer.place(&host) == .docked);
+    try testing.expect(composer.fallback_docked);
+
+    // An input box whose rule would fall below the tile's rows is a pane
+    // between two sizes: not yet a place to sit.
+    sessions[0].prompt_box = .{ .top_rule = @intCast(rows - 2), .first = @intCast(rows - 1), .last = @intCast(rows - 1) };
+    try testing.expect(composer.place(&host) == .docked);
+
+    // Found: on the tile's own input box, and no tile gives up rows any more.
+    sessions[0].prompt_box = .{ .top_rule = @intCast(rows - 5), .first = @intCast(rows - 4), .last = @intCast(rows - 4) };
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(!composer.fallback_docked);
+    try testing.expectEqual(@as(c_int, 0), composer.gridReservePx(&host, 0));
+    try testing.expectEqual(@as(c_int, 0), composer.gridReservePx(&host, 1));
+    try testing.expect(composer.idRow(&host, 1) == null); // the id line goes back to its own bar
+
+    // And once one has been found, a missing box is a dialog: the composer waits.
+    sessions[0].prompt_box = null;
+    host.now_ms += fallback_delay_ms * 2;
+    try testing.expect(composer.place(&host) == .none);
 }
 
 test "the toggle sits on the rule under Claude's input box, a cell from its right end" {
     var sessions = [_]types.SessionUiInfo{.{ .dead = false, .spawned = true, .claude_live = true }};
     var host = testHost(&sessions);
     host.term_cols = 80;
+    host.term_rows = 40;
     host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
     const pad = renderer_mod.terminal_padding;
-    const rect = toggleRect(&host, .{ .top_rule = 30, .first = 31, .last = 31 }) orelse return error.TestUnexpectedResult;
+    var pane = surfaceOf(&host, 0) orelse return error.TestUnexpectedResult;
+    const rect = toggleRect(pane, .{ .top_rule = 30, .first = 31, .last = 31 }) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(c_int, pad + 32 * 20), rect.y);
     try testing.expectEqual(@as(c_int, 20), rect.h);
     try testing.expectEqual(@as(c_int, pad + 79 * 10), rect.x + rect.w); // the last column stays rule
     try testing.expectEqual(toggle_cells * 10, rect.w);
-    host.term_cols = 6;
-    try testing.expect(toggleRect(&host, .{ .top_rule = 30, .first = 31, .last = 31 }) == null);
+    pane.cols = 6;
+    try testing.expect(toggleRect(pane, .{ .top_rule = 30, .first = 31, .last = 31 }) == null);
 }
 
 test "firstLine previews the first non-blank line" {

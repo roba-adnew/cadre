@@ -56,9 +56,7 @@ pub fn makeUiHost(
     ui_scale: f32,
     cell_width_pixels: c_int,
     cell_height_pixels: c_int,
-    grid_cell_width: c_int,
-    grid_cell_height: c_int,
-    grid_font_px: c_int,
+    grid_font: ui_mod.TermFont,
     full_font: ui_mod.TermFont,
     grid_cols: usize,
     grid_rows: usize,
@@ -72,6 +70,9 @@ pub fn makeUiHost(
     theme: *const colors_mod.Theme,
 ) ui_mod.UiHost {
     for (sessions, 0..) |session, i| {
+        const claude_live = session.claude_title_live or session.claude_fg_live;
+        // Looked for on the live screen only: scrolled back, the rows on show are history.
+        const scrolled_back = i < views.len and views[i].is_viewing_scrollback;
         buffer[i] = .{
             .dead = session.dead,
             .spawned = session.spawned,
@@ -84,21 +85,19 @@ pub fn makeUiHost(
             // The hidden-terminals switcher shows the terminal title (e.g. the name
             // from Claude Code's /rename); borrows the session-owned string.
             .agent_name = session.title,
-            .claude_live = session.claude_title_live or session.claude_fg_live,
+            .claude_live = claude_live,
             .approval_pending = if (i < views.len) views[i].approval_pending else false,
             .persist_index = session.persist_index,
             .term_h_px = session.pty_size.ws_ypixel,
+            .prompt_box = if (claude_live and session.isVisible() and !scrolled_back)
+                if (session.terminal) |*terminal| prompt_box.find(terminal) else null
+            else
+                null,
         };
     }
 
     const focused_session = sessions[anim_state.focused_session];
     const focused_cwd = focused_session.cwd_path;
-    // Looked for on the live screen only: scrolled back, the rows on show are history.
-    const focused_scrolled_back = anim_state.focused_session < views.len and views[anim_state.focused_session].is_viewing_scrollback;
-    const focused_prompt_box = if (focused_session.isVisible() and !focused_scrolled_back)
-        if (focused_session.terminal) |*terminal| prompt_box.find(terminal) else null
-    else
-        null;
     const animating_rect: ?Rect = switch (anim_state.mode) {
         .Expanding, .Collapsing => anim_state.getCurrentRect(now),
         else => null,
@@ -113,9 +112,10 @@ pub fn makeUiHost(
         .grid_rows = grid_rows,
         .cell_w = cell_width_pixels,
         .cell_h = cell_height_pixels,
-        .grid_cell_w = grid_cell_width,
-        .grid_cell_h = grid_cell_height,
-        .grid_font_px = grid_font_px,
+        .grid_cell_w = grid_font.cell_w,
+        .grid_cell_h = grid_font.cell_h,
+        .grid_font_px = grid_font.px,
+        .grid_font = grid_font,
         .full_font = full_font,
         .term_cols = term_cols,
         .term_rows = term_rows,
@@ -126,6 +126,5 @@ pub fn makeUiHost(
         .animating_rect = animating_rect,
         .sessions = buffer[0..sessions.len],
         .theme = theme,
-        .prompt_box = focused_prompt_box,
     };
 }

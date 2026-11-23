@@ -126,7 +126,8 @@ pub fn render(
     grid: ?*const GridLayout,
     window_focused: bool,
     inactive_overlay_alpha: u8,
-    /// Full view: the composer's box reaches this far above Claude's input box.
+    /// The composer's box reaches this far above Claude's input box in one
+    /// pane (full view, or a settled grid tile).
     prompt_lift: ?ui_types.PromptLift,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
@@ -177,6 +178,12 @@ pub fn render(
                     const entry = render_cache.entry(i);
                     const session_dims = sessionTermDims(session, term_cols, term_rows);
                     try renderSessionCached(renderer, session, view, entry, cell_rect, grid_render_scale, i == anim_state.focused_session, true, true, currentWaveEffect(view, current_time), grid_font, session_dims.cols, session_dims.rows, current_time, true, theme, ui_scale);
+                    if (prompt_lift) |lift| {
+                        // A waving tile is drawn in strips; the lift waits the wave out.
+                        if (lift.session == i and !is_waving and grid_render_scale == 1.0) {
+                            if (entry.texture) |tex| liftPromptRows(renderer, tex, cell_rect, lift, grid_font, theme, ui_scale);
+                        }
+                    }
                 }
             }
         },
@@ -188,7 +195,9 @@ pub fn render(
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
             try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale);
             if (prompt_lift) |lift| {
-                if (entry.texture) |tex| liftPromptRows(renderer, tex, full_rect, lift, font, theme, ui_scale);
+                if (lift.session == anim_state.focused_session) {
+                    if (entry.texture) |tex| liftPromptRows(renderer, tex, full_rect, lift, font, theme, ui_scale);
+                }
             }
         },
         .PanningLeft, .PanningRight => {

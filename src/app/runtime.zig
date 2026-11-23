@@ -2434,6 +2434,16 @@ const Window = struct {
         return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
     }
 
+    /// The grid font's metrics, for UI drawn onto a grid tile's rows.
+    fn gridFont(self: *const Window) ui_mod.TermFont {
+        return .{
+            .cell_w = self.grid_font.cell_width,
+            .cell_h = self.grid_font.cell_height,
+            .px = self.grid_font_size,
+            .ascent = @intFromFloat(self.grid_font.primary_metrics.ascent),
+        };
+    }
+
     /// The full-view font's metrics, for UI drawn onto a full-view terminal's rows.
     fn fullFont(self: *const Window) ui_mod.TermFont {
         return .{
@@ -3081,9 +3091,7 @@ const Window = struct {
             self.ui_scale,
             self.cell_width_pixels,
             self.cell_height_pixels,
-            self.grid_font.cell_width,
-            self.grid_font.cell_height,
-            self.grid_font_size,
+            self.gridFont(),
             self.fullFont(),
             self.grid.cols,
             self.grid.rows,
@@ -3890,9 +3898,7 @@ const Window = struct {
             self.ui_scale,
             self.cell_width_pixels,
             self.cell_height_pixels,
-            self.grid_font.cell_width,
-            self.grid_font.cell_height,
-            self.grid_font_size,
+            self.gridFont(),
             self.fullFont(),
             self.grid.cols,
             self.grid.rows,
@@ -4278,9 +4284,7 @@ const Window = struct {
                     self.ui_scale,
                     self.cell_width_pixels,
                     self.cell_height_pixels,
-                    self.grid_font.cell_width,
-                    self.grid_font.cell_height,
-                    self.grid_font_size,
+                    self.gridFont(),
                     self.fullFont(),
                     self.grid.cols,
                     self.grid.rows,
@@ -4452,9 +4456,7 @@ const Window = struct {
             self.ui_scale,
             self.cell_width_pixels,
             self.cell_height_pixels,
-            self.grid_font.cell_width,
-            self.grid_font.cell_height,
-            self.grid_font_size,
+            self.gridFont(),
             self.fullFont(),
             self.grid.cols,
             self.grid.rows,
