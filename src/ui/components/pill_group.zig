@@ -19,9 +19,11 @@ const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const pill_margin: c_int = 20;
 const pill_size: c_int = 40;
 const max_slots: c_int = 4;
-// The tray icon: half a pill, tucked in the very corner.
-const tray_margin: c_int = 6;
+// The tray icon: half a pill, set in from the corner.
+const tray_margin: c_int = 12;
 const tray_size: c_int = 20;
+// The live pane's orange in the app icon (Cadre Dispatch's accent).
+const live_pane = c.SDL_Color{ .r = 0xFF, .g = 0xA6, .b = 0x2B, .a = 255 };
 const reveal_duration_ms: i64 = 180;
 
 pub const PillGroupComponent = struct {
@@ -74,6 +76,26 @@ pub const PillGroupComponent = struct {
         return .{ .x = host.window_w - m - sz, .y = m, .w = sz, .h = sz };
     }
 
+    /// The icon plus the gap between it and the window's corner, so a pointer
+    /// thrown into the corner still lands on the tray.
+    fn trayHitRect(host: *const types.UiHost) geom.Rect {
+        const r = trayRect(host);
+        return .{ .x = r.x, .y = 0, .w = host.window_w - r.x, .h = r.y + r.h };
+    }
+
+    const Panes = struct { at: c_int, side: c_int, gap: c_int };
+
+    /// The icon's 2x2 panes on a `w`-wide tile: where the first starts, a
+    /// pane's side and the gap between two. From Cadre Dispatch's drawing (a
+    /// 20.6-unit tile, 5.5-unit panes 1 apart), with the gap widened a pixel
+    /// where that is what centres the panes.
+    fn trayPanes(w: c_int) Panes {
+        const side = @divFloor(w * 55 + 103, 206);
+        var gap: c_int = @max(1, @divFloor(w * 10 + 103, 206));
+        if (@mod(w - gap, 2) != 0) gap += 1;
+        return .{ .at = @divFloor(w - side * 2 - gap, 2), .side = side, .gap = gap };
+    }
+
     /// The band the revealed pills live in; leaving it slides them away.
     fn stripRect(host: *const types.UiHost) geom.Rect {
         const w = dpi.scale(max_slots * (pill_size + pill_margin) + pill_margin, host.ui_scale);
@@ -107,7 +129,7 @@ pub const PillGroupComponent = struct {
             c.SDL_EVENT_MOUSE_MOTION => {
                 const mx: c_int = @intFromFloat(event.motion.x);
                 const my: c_int = @intFromFloat(event.motion.y);
-                self.tray_hovered = geom.containsPoint(trayRect(host), mx, my);
+                self.tray_hovered = geom.containsPoint(trayHitRect(host), mx, my);
                 self.strip_hovered = geom.containsPoint(stripRect(host), mx, my);
                 if (self.tray_hovered or (self.reveal_target > 0 and self.strip_hovered)) self.setRevealTarget(1, host.now_ms);
                 return false;
@@ -115,7 +137,7 @@ pub const PillGroupComponent = struct {
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 const mx: c_int = @intFromFloat(event.button.x);
                 const my: c_int = @intFromFloat(event.button.y);
-                if (geom.containsPoint(trayRect(host), mx, my)) {
+                if (geom.containsPoint(trayHitRect(host), mx, my)) {
                     self.setRevealTarget(1, host.now_ms);
                     return true;
                 }
@@ -131,7 +153,7 @@ pub const PillGroupComponent = struct {
 
     fn hitTest(self_ptr: *anyopaque, host: *const types.UiHost, x: c_int, y: c_int) bool {
         const self: *PillGroupComponent = @ptrCast(@alignCast(self_ptr));
-        return self.reveal_target == 0 and geom.containsPoint(trayRect(host), x, y);
+        return self.reveal_target == 0 and geom.containsPoint(trayHitRect(host), x, y);
     }
 
     /// Pack the visible pills into consecutive slots (slot 0 = rightmost) so a
@@ -211,10 +233,10 @@ pub const PillGroupComponent = struct {
         expanding_overlay.reveal = self.reveal(host.now_ms);
     }
 
-    /// Two-tone, simplified take on the app icon in the theme's own colors: a
-    /// rounded body in the dim text tone, 2x2 background-colored panes, and a
-    /// prompt triangle (the icon's ">") cut back into the first pane in the
-    /// body tone. Fades out as the pills slide in.
+    /// Cadre Dispatch's toolbar icon, the app icon cut down to a glyph: a
+    /// rounded frame in the dim text tone around 2x2 panes, the live one in
+    /// its orange and the rest in the frame's tone at 55%. Fades out as the
+    /// pills slide in.
     fn render(self_ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, _: *types.UiAssets) void {
         const self: *PillGroupComponent = @ptrCast(@alignCast(self_ptr));
         defer self.first_frame.markDrawn();
@@ -223,44 +245,31 @@ pub const PillGroupComponent = struct {
         const alpha: u8 = @intFromFloat(alpha_f * 255.0);
         const r = trayRect(host);
         const theme = host.theme;
-        const body = theme.chromeTextDim();
-        const screen = theme.background;
+        const frame = theme.chromeTextDim();
+        const radius = @divFloor(r.w, 4);
 
         _ = c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND);
-        _ = c.SDL_SetRenderDrawColor(renderer, body.r, body.g, body.b, alpha);
-        primitives.fillRoundedRect(renderer, r, @divFloor(r.w, 4));
         if (self.tray_hovered) {
             const tint = theme.hoverOverlay();
             _ = c.SDL_SetRenderDrawColor(renderer, tint.r, tint.g, tint.b, @intFromFloat(alpha_f * @as(f32, @floatFromInt(tint.a))));
-            primitives.fillRoundedRect(renderer, r, @divFloor(r.w, 4));
+            primitives.fillRoundedRect(renderer, r, radius);
         }
+        // The drawing's 1.6-unit stroke on its 20.6-unit tile.
+        const stroke: c_int = @max(1, @divFloor(r.w * 16 + 103, 206));
+        primitives.drawThickBorder(renderer, r, stroke, radius, .{ .r = frame.r, .g = frame.g, .b = frame.b, .a = alpha });
 
-        // Panes on the design's 40-unit grid: 12-unit panes at 6 and 21, radius 2.
-        const pane = @divFloor(r.w * 12, 40);
-        const pane_at = [_]c_int{ @divFloor(r.w * 6, 40), @divFloor(r.w * 21, 40) };
-        _ = c.SDL_SetRenderDrawColor(renderer, screen.r, screen.g, screen.b, alpha);
-        for (pane_at) |dy| {
-            for (pane_at) |dx| {
-                primitives.fillRoundedRect(renderer, .{ .x = r.x + dx, .y = r.y + dy, .w = pane, .h = pane }, @divFloor(r.w, 20));
+        const panes = trayPanes(r.w);
+        const pane_at = [_]c_int{ panes.at, panes.at + panes.side + panes.gap };
+        for (pane_at, 0..) |dy, row| {
+            for (pane_at, 0..) |dx, col| {
+                if (row == 0 and col == 0) {
+                    _ = c.SDL_SetRenderDrawColor(renderer, live_pane.r, live_pane.g, live_pane.b, alpha);
+                } else {
+                    _ = c.SDL_SetRenderDrawColor(renderer, frame.r, frame.g, frame.b, @intFromFloat(alpha_f * 0.55 * 255.0));
+                }
+                primitives.fillRoundedRect(renderer, .{ .x = r.x + dx, .y = r.y + dy, .w = panes.side, .h = panes.side }, @divFloor(r.w, 20));
             }
         }
-
-        const px: f32 = @floatFromInt(r.x + pane_at[0]);
-        const py: f32 = @floatFromInt(r.y + pane_at[0]);
-        const ps: f32 = @floatFromInt(pane);
-        const prompt = c.SDL_FColor{
-            .r = @as(f32, @floatFromInt(body.r)) / 255.0,
-            .g = @as(f32, @floatFromInt(body.g)) / 255.0,
-            .b = @as(f32, @floatFromInt(body.b)) / 255.0,
-            .a = alpha_f,
-        };
-        const verts = [3]c.SDL_Vertex{
-            .{ .position = .{ .x = px + ps * 0.34, .y = py + ps * 0.26 }, .color = prompt },
-            .{ .position = .{ .x = px + ps * 0.34, .y = py + ps * 0.74 }, .color = prompt },
-            .{ .position = .{ .x = px + ps * 0.74, .y = py + ps * 0.5 }, .color = prompt },
-        };
-        const indices = [_]c_int{ 0, 1, 2 };
-        _ = c.SDL_RenderGeometry(renderer, null, &verts, 3, &indices, 3);
     }
 
     fn wantsFrame(self_ptr: *anyopaque, host: *const types.UiHost) bool {
@@ -282,6 +291,48 @@ pub const PillGroupComponent = struct {
         .wantsFrame = wantsFrame,
     };
 };
+
+test "the tray icon's panes are centred at every scale" {
+    for ([_]c_int{ 20, 30, 40, 60 }) |w| {
+        const p = PillGroupComponent.trayPanes(w);
+        try std.testing.expect(p.side > 0 and p.gap > 0 and p.at > 0);
+        try std.testing.expectEqual(w, p.at * 2 + p.side * 2 + p.gap);
+    }
+    // 1x and 2x: the drawing's proportions, to the pixel.
+    try std.testing.expectEqual(PillGroupComponent.Panes{ .at = 4, .side = 5, .gap = 2 }, PillGroupComponent.trayPanes(20));
+    try std.testing.expectEqual(PillGroupComponent.Panes{ .at = 8, .side = 11, .gap = 2 }, PillGroupComponent.trayPanes(40));
+}
+
+test "the gap between the tray icon and the window's corner counts as the tray" {
+    const theme = @import("../../colors.zig").Theme.default();
+    const host = types.UiHost{
+        .now_ms = 0,
+        .window_w = 1200,
+        .window_h = 800,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 0,
+        .cell_h = 0,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = &.{},
+        .theme = &theme,
+    };
+    const icon = PillGroupComponent.trayRect(&host);
+    try std.testing.expectEqual(@as(c_int, tray_size), icon.w); // the size is unchanged
+    try std.testing.expectEqual(@as(c_int, tray_margin), icon.y);
+    try std.testing.expectEqual(@as(c_int, 1200 - tray_margin), icon.x + icon.w);
+    const hit = PillGroupComponent.trayHitRect(&host);
+    try std.testing.expect(geom.containsPoint(hit, 1199, 0)); // the very corner
+    try std.testing.expect(geom.containsPoint(hit, icon.x, icon.y + icon.h - 1));
+    try std.testing.expect(!geom.containsPoint(hit, icon.x - 1, icon.y));
+    try std.testing.expect(!geom.containsPoint(hit, icon.x, icon.y + icon.h));
+}
 
 test "pill strip stays revealed after the pointer leaves the tray for a pill" {
     const colors = @import("../../colors.zig");
