@@ -337,6 +337,17 @@ pub const HiddenSwitcherComponent = struct {
         };
     }
 
+    /// Repo headings are orange like Cadre Dispatch's (its `--heading`): pale on
+    /// a dark menu, deep on a light one. Not the palette's yellow, which this
+    /// menu already uses for "needs you". The light value is deeper than
+    /// Dispatch's because this panel is gray where Dispatch's is white.
+    fn headingColor(theme: *const colors.Theme) c.SDL_Color {
+        return if (theme.isLight())
+            .{ .r = 0x8A, .g = 0x4B, .b = 0x00, .a = 255 }
+        else
+            .{ .r = 0xFF, .g = 0xCE, .b = 0x8A, .a = 255 };
+    }
+
     fn render(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *HiddenSwitcherComponent = @ptrCast(@alignCast(ptr));
         defer self.first_frame.markDrawn();
@@ -430,9 +441,9 @@ pub const HiddenSwitcherComponent = struct {
             const row_y = l.row_y[i];
             const row_center = row_y + @divFloor(row_h, 2);
 
-            // The repo's name, dim and small, sitting just above its first row.
+            // The repo's name, small and orange, sitting just above its first row.
             if (startsGroup(host.sessions, buf[0..n], i)) {
-                drawText(self.allocator, renderer, heading_fonts.regular, basenameOf(info), theme.chromeTextDim(), modal_x + pad, row_y - dpi.scale(11, ui_scale));
+                drawText(self.allocator, renderer, heading_fonts.regular, basenameOf(info), headingColor(theme), modal_x + pad, row_y - dpi.scale(11, ui_scale));
             }
 
             if (i == sel) {
