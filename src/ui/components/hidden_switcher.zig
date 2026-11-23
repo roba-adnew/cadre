@@ -17,9 +17,11 @@ const max_entries = 64;
 const query_cap = 128;
 
 /// Modal picker listing hidden terminals (Cmd+J hides; this reveals). Opens on
-/// Cmd+Shift+J, lists each as "agent.folder — ● status" (just "folder" when no
-/// agent is running), filters as you type (folder or agent name), and reveals the
-/// selected one via a RevealHiddenTerminal action.
+/// Cmd+Shift+J and groups them by repo, the way Cadre Dispatch's agent picker
+/// does: a heading with the folder's name, then each terminal there by its
+/// agent's name ("shell" when no agent named it) with its status. Filters as
+/// you type (folder or agent name), and reveals the selected one via a
+/// RevealHiddenTerminal action.
 pub const HiddenSwitcherComponent = struct {
     allocator: std.mem.Allocator,
     open: bool = false,
@@ -83,36 +85,31 @@ pub const HiddenSwitcherComponent = struct {
         return if (b.len == 0) "/" else b;
     }
 
-    /// Max displayed bytes for an auto-generated title before the ellipsis (the
-    /// auto-names are ASCII, so bytes == characters here).
-    const title_display_cap = 10;
-    const ellipsis = "\u{2026}"; // …
-
-    /// Display form of a title. A name you set via /rename has no spaces and is
-    /// shown in full; Claude Code's auto-generated names are sentence-like (they
-    /// contain spaces), so those are capped at `title_display_cap` + ellipsis.
-    fn displayTitle(title: []const u8, buf: []u8) []const u8 {
-        if (std.mem.indexOfScalar(u8, title, ' ') == null) return title; // user-set: keep full
-        if (title.len <= title_display_cap) return title; // short phrase: keep
-        var end: usize = title_display_cap;
-        while (end > 0 and title[end] & 0xC0 == 0x80) end -= 1; // back up off a UTF-8 split
-        if (end + ellipsis.len > buf.len) return title[0..end];
-        @memcpy(buf[0..end], title[0..end]);
-        @memcpy(buf[end .. end + ellipsis.len], ellipsis);
-        return buf[0 .. end + ellipsis.len];
+    /// What a row is called under its repo's heading: the agent's name, or
+    /// "shell" for a terminal no agent has named.
+    fn rowName(info: types.SessionUiInfo) []const u8 {
+        return info.agent_name orelse "shell";
     }
 
-    /// Row label: "<title>.<folder>" when a title is set, else just "<folder>".
-    /// Auto-generated titles are shortened for display; filtering uses the full title.
-    fn rowLabel(info: types.SessionUiInfo, buf: []u8) []const u8 {
-        const base = basenameOf(info);
-        const title = info.agent_name orelse return base;
-        var title_buf: [64]u8 = undefined;
-        const shown = displayTitle(title, &title_buf);
-        return std.fmt.bufPrint(buf, "{s}.{s}", .{ shown, base }) catch |err| blk: {
-            log.warn("row label format failed: {}", .{err});
-            break :blk base;
-        };
+    /// Case-insensitive, with the exact bytes as tie-break so equal names end up together.
+    fn orderText(a: []const u8, b: []const u8) std.math.Order {
+        const folded = std.ascii.orderIgnoreCase(a, b);
+        return if (folded != .eq) folded else std.mem.order(u8, a, b);
+    }
+
+    /// Repo first, then name: the order Cadre Dispatch lists agents in.
+    fn rowLessThan(sessions: []const types.SessionUiInfo, a: usize, b: usize) bool {
+        const by_repo = orderText(basenameOf(sessions[a]), basenameOf(sessions[b]));
+        if (by_repo != .eq) return by_repo == .lt;
+        const by_name = orderText(rowName(sessions[a]), rowName(sessions[b]));
+        if (by_name != .eq) return by_name == .lt;
+        return a < b;
+    }
+
+    /// Whether row `i` of `entries` is the first of its repo, so its heading goes above it.
+    fn startsGroup(sessions: []const types.SessionUiInfo, entries: []const usize, i: usize) bool {
+        if (i == 0) return true;
+        return !std.mem.eql(u8, basenameOf(sessions[entries[i]]), basenameOf(sessions[entries[i - 1]]));
     }
 
     /// Empty `q` matches all; otherwise matches the folder or the agent name
@@ -126,7 +123,8 @@ pub const HiddenSwitcherComponent = struct {
         return false;
     }
 
-    /// Collect indices of spawned-but-hidden sessions matching `q`, in grid order.
+    /// Collect indices of spawned-but-hidden sessions matching `q`, each repo's
+    /// together (see rowLessThan).
     fn collectHidden(sessions: []const types.SessionUiInfo, q: []const u8, out: *[max_entries]usize) usize {
         var n: usize = 0;
         for (sessions, 0..) |info, i| {
@@ -136,25 +134,42 @@ pub const HiddenSwitcherComponent = struct {
             out[n] = i;
             n += 1;
         }
+        std.mem.sort(usize, out[0..n], sessions, rowLessThan);
         return n;
     }
 
     /// Modal geometry, shared by render() and mouse hit-testing so clicks land on
-    /// exactly what's drawn. `n` is the filtered row count.
-    const Layout = struct { modal: geom.Rect, pad: c_int, gap: c_int, title_h: c_int, search_h: c_int, row_h: c_int, radius: c_int, rows_y0: c_int, close_w: c_int };
+    /// exactly what's drawn. `row_y` is each row's top: a repo's heading sits
+    /// above its first row, so rows aren't evenly spaced. Headings start at
+    /// `pad`, rows' names at `name_x`.
+    const Layout = struct { modal: geom.Rect, pad: c_int, gap: c_int, title_h: c_int, search_h: c_int, row_h: c_int, radius: c_int, rows_y0: c_int, close_w: c_int, name_x: c_int, row_y: [max_entries]c_int };
 
-    fn computeLayout(host: *const types.UiHost, n: usize) Layout {
+    /// `entries` are the filtered rows, as collectHidden returns them.
+    fn computeLayout(host: *const types.UiHost, entries: []const usize) Layout {
         const s = host.ui_scale;
         const pad = dpi.scale(16, s);
         const row_h = dpi.scale(34, s);
         const title_h = dpi.scale(26, s);
         const search_h = dpi.scale(30, s);
         const gap = dpi.scale(8, s);
-        const display_rows: c_int = @max(1, @as(c_int, @intCast(n))); // 1 row reserved for "no matches"
+
+        // Rows first, measured from the top of the list. The first heading is
+        // shorter: the search bar above it already gives it room.
+        var row_y: [max_entries]c_int = undefined;
+        var list_h: c_int = 0;
+        for (entries, 0..) |_, i| {
+            if (startsGroup(host.sessions, entries, i)) list_h += dpi.scale(if (i == 0) 24 else 30, s);
+            row_y[i] = list_h;
+            list_h += row_h;
+        }
+        if (entries.len == 0) list_h = row_h; // one row reserved for "no matches"
+
         const modal_w = @min(dpi.scale(460, s), host.window_w - dpi.scale(80, s));
-        const modal_h = pad + title_h + gap + search_h + gap + display_rows * row_h + pad;
+        const modal_h = pad + title_h + gap + search_h + gap + list_h + pad;
         const modal_x = @divFloor(host.window_w - modal_w, 2);
         const modal_y = @divFloor(host.window_h - modal_h, 3); // upper third reads better than dead-center
+        const rows_y0 = modal_y + pad + title_h + gap + search_h + gap;
+        for (row_y[0..entries.len]) |*y| y.* += rows_y0;
         return .{
             .modal = .{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h },
             .pad = pad,
@@ -163,29 +178,31 @@ pub const HiddenSwitcherComponent = struct {
             .search_h = search_h,
             .row_h = row_h,
             .radius = dpi.scale(10, s),
-            .rows_y0 = modal_y + pad + title_h + gap + search_h + gap,
+            .rows_y0 = rows_y0,
             .close_w = dpi.scale(24, s),
+            .name_x = modal_x + pad + dpi.scale(16, s),
+            .row_y = row_y,
         };
     }
 
     /// Square hit box of the per-row close X, flush with the row's right edge.
     fn closeRect(l: Layout, row: usize) geom.Rect {
-        const row_y = l.rows_y0 + @as(c_int, @intCast(row)) * l.row_h;
         return .{
             .x = l.modal.x + l.modal.w - l.pad - l.close_w,
-            .y = row_y + @divFloor(l.row_h - l.close_w, 2),
+            .y = l.row_y[row] + @divFloor(l.row_h - l.close_w, 2),
             .w = l.close_w,
             .h = l.close_w,
         };
     }
 
-    /// Which filtered row (0..n) is under (x, y), or null if not over a row.
-    fn rowAt(host: *const types.UiHost, n: usize, x: c_int, y: c_int) ?usize {
-        if (n == 0) return null;
-        const l = computeLayout(host, n);
-        if (x < l.modal.x or x > l.modal.x + l.modal.w or y < l.rows_y0) return null;
-        const row: usize = @intCast(@divFloor(y - l.rows_y0, l.row_h));
-        return if (row < n) row else null;
+    /// Which filtered row is under (x, y), or null if not over a row (a heading isn't one).
+    fn rowAt(host: *const types.UiHost, entries: []const usize, x: c_int, y: c_int) ?usize {
+        const l = computeLayout(host, entries);
+        if (x < l.modal.x or x > l.modal.x + l.modal.w) return null;
+        for (l.row_y[0..entries.len], 0..) |row_y, row| {
+            if (y >= row_y and y < row_y + l.row_h) return row;
+        }
+        return null;
     }
 
     fn handleEvent(ptr: *anyopaque, host: *const types.UiHost, event: *const c.SDL_Event, out: *types.UiActionQueue) bool {
@@ -207,7 +224,7 @@ pub const HiddenSwitcherComponent = struct {
                 if (!self.open) return false;
                 var buf: [max_entries]usize = undefined;
                 const n = collectHidden(host.sessions, self.query(), &buf);
-                if (rowAt(host, n, @intFromFloat(event.motion.x), @intFromFloat(event.motion.y))) |row| {
+                if (rowAt(host, buf[0..n], @intFromFloat(event.motion.x), @intFromFloat(event.motion.y))) |row| {
                     self.selected = row;
                 }
                 return true;
@@ -218,8 +235,8 @@ pub const HiddenSwitcherComponent = struct {
                 const my: c_int = @intFromFloat(event.button.y);
                 var buf: [max_entries]usize = undefined;
                 const n = collectHidden(host.sessions, self.query(), &buf);
-                if (rowAt(host, n, mx, my)) |row| {
-                    if (geom.containsPoint(closeRect(computeLayout(host, n), row), mx, my)) {
+                if (rowAt(host, buf[0..n], mx, my)) |row| {
+                    if (geom.containsPoint(closeRect(computeLayout(host, buf[0..n]), row), mx, my)) {
                         // Stay open so several can be closed in a row; render
                         // auto-dismisses once nothing is hidden.
                         out.append(.{ .CloseHiddenTerminal = buf[row] }) catch |err| {
@@ -231,7 +248,7 @@ pub const HiddenSwitcherComponent = struct {
                         log.warn("failed to queue reveal action: {}", .{err});
                     };
                     self.close();
-                } else if (!geom.containsPoint(computeLayout(host, n).modal, mx, my)) {
+                } else if (!geom.containsPoint(computeLayout(host, buf[0..n]).modal, mx, my)) {
                     self.close(); // click on the dim backdrop dismisses
                 }
                 return true;
@@ -340,7 +357,7 @@ pub const HiddenSwitcherComponent = struct {
         const theme = host.theme;
         const ui_scale = host.ui_scale;
 
-        const l = computeLayout(host, n);
+        const l = computeLayout(host, buf[0..n]);
         const modal = l.modal;
         const modal_x = modal.x;
         const modal_y = modal.y;
@@ -397,16 +414,26 @@ pub const HiddenSwitcherComponent = struct {
         ) catch |err| log.warn("failed to render search bar: {}", .{err});
 
         const row_fonts = font_cache.get(dpi.scale(16, ui_scale)) catch return;
+        const heading_fonts = font_cache.get(dpi.scale(13, ui_scale)) catch return;
 
         if (n == 0) {
             drawText(self.allocator, renderer, row_fonts.regular, "No matches", theme.foreground, modal_x + pad + gap, rows_y0 + @divFloor(row_h, 2));
             return;
         }
 
+        // Names stop short of the status column instead of running under it.
+        const status_right = modal_x + modal_w - pad - l.close_w - gap;
+        const name_clip = c.SDL_Rect{ .x = l.name_x, .y = modal_y, .w = status_right - dpi.scale(112, ui_scale) - l.name_x, .h = modal.h };
+
         for (0..n) |i| {
             const info = host.sessions[buf[i]];
-            const row_y = rows_y0 + @as(c_int, @intCast(i)) * row_h;
+            const row_y = l.row_y[i];
             const row_center = row_y + @divFloor(row_h, 2);
+
+            // The repo's name, dim and small, sitting just above its first row.
+            if (startsGroup(host.sessions, buf[0..n], i)) {
+                drawText(self.allocator, renderer, heading_fonts.regular, basenameOf(info), theme.chromeTextDim(), modal_x + pad, row_y - dpi.scale(11, ui_scale));
+            }
 
             if (i == sel) {
                 const hl = geom.Rect{ .x = modal_x + gap, .y = row_y, .w = modal_w - 2 * gap, .h = row_h };
@@ -414,8 +441,9 @@ pub const HiddenSwitcherComponent = struct {
                 primitives.fillRoundedRect(renderer, hl, dpi.scale(6, ui_scale));
             }
 
-            var label_left_buf: [288]u8 = undefined;
-            drawText(self.allocator, renderer, row_fonts.regular, rowLabel(info, &label_left_buf), theme.foreground, modal_x + pad + gap, row_center);
+            _ = c.SDL_SetRenderClipRect(renderer, &name_clip);
+            drawText(self.allocator, renderer, row_fonts.regular, rowName(info), theme.foreground, l.name_x, row_center);
+            _ = c.SDL_SetRenderClipRect(renderer, null);
 
             var label_buf: [48]u8 = undefined;
             const marker = statusMarker(info);
@@ -423,7 +451,7 @@ pub const HiddenSwitcherComponent = struct {
                 log.warn("label format failed: {}", .{err});
                 break :blk statusLabel(info);
             };
-            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info), modal_x + modal_w - pad - l.close_w - gap, row_center);
+            drawTextRight(self.allocator, renderer, row_fonts.regular, label, statusColor(theme, info), status_right, row_center);
 
             if (i == sel) {
                 const xr = closeRect(l, i);
@@ -504,6 +532,27 @@ const test_sessions = [_]types.SessionUiInfo{
     .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "cacha" }, // 3: no agent
 };
 
+fn testHost(sessions: []const types.SessionUiInfo, theme: *const colors.Theme) types.UiHost {
+    return .{
+        .now_ms = 0,
+        .window_w = 1200,
+        .window_h = 800,
+        .ui_scale = 1.0,
+        .grid_cols = 1,
+        .grid_rows = 1,
+        .cell_w = 0,
+        .cell_h = 0,
+        .term_cols = 80,
+        .term_rows = 24,
+        .view_mode = .Grid,
+        .focused_session = 0,
+        .focused_cwd = null,
+        .focused_has_foreground_process = false,
+        .sessions = sessions,
+        .theme = theme,
+    };
+}
+
 test "open switcher covers the window, so the composer hides under it" {
     var switcher = HiddenSwitcherComponent{ .allocator = std.testing.allocator };
     const host: types.UiHost = undefined;
@@ -512,12 +561,44 @@ test "open switcher covers the window, so the composer hides under it" {
     try std.testing.expect(HiddenSwitcherComponent.hitTest(&switcher, &host, 10, 10));
 }
 
-test "collectHidden picks only spawned+hidden, preserving index order" {
+test "collectHidden picks only spawned+hidden, sorted by repo" {
     var buf: [max_entries]usize = undefined;
     const n = HiddenSwitcherComponent.collectHidden(&test_sessions, "", &buf);
     try std.testing.expectEqual(@as(usize, 2), n);
-    try std.testing.expectEqual(@as(usize, 1), buf[0]);
-    try std.testing.expectEqual(@as(usize, 3), buf[1]);
+    try std.testing.expectEqual(@as(usize, 3), buf[0]); // cacha
+    try std.testing.expectEqual(@as(usize, 1), buf[1]); // cadre
+}
+
+test "hidden terminals are grouped by repo, then by name, with a heading per repo" {
+    const sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "kimoyo", .agent_name = "holdco" }, // 0
+        .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "cadre", .agent_name = "dev" }, // 1
+        .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "kimoyo", .agent_name = "Analyst" }, // 2
+        .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "kimoyo" }, // 3: no agent
+        .{ .dead = false, .spawned = true, .hidden = true, .cwd_basename = "Cacha", .agent_name = "jev" }, // 4
+    };
+    var buf: [max_entries]usize = undefined;
+    const n = HiddenSwitcherComponent.collectHidden(&sessions, "", &buf);
+    // Cacha/jev, cadre/dev, then kimoyo's three by name, case aside.
+    try std.testing.expectEqualSlices(usize, &.{ 4, 1, 2, 0, 3 }, buf[0..n]);
+    const heads = [_]bool{ true, true, true, false, false };
+    for (heads, 0..) |head, i| try std.testing.expectEqual(head, HiddenSwitcherComponent.startsGroup(&sessions, buf[0..n], i));
+
+    // A heading takes room above its repo's first row and is not itself a row.
+    const theme = colors.Theme.default();
+    const host = testHost(&sessions, &theme);
+    const l = HiddenSwitcherComponent.computeLayout(&host, buf[0..n]);
+    try std.testing.expect(l.row_y[0] > l.rows_y0);
+    try std.testing.expect(l.row_y[1] > l.row_y[0] + l.row_h);
+    try std.testing.expectEqual(l.row_y[2] + l.row_h, l.row_y[3]); // same repo: rows touch
+    try std.testing.expectEqual(l.row_y[4] + l.row_h + l.pad, l.modal.y + l.modal.h);
+    const x = l.modal.x + l.pad;
+    try std.testing.expectEqual(@as(?usize, 1), HiddenSwitcherComponent.rowAt(&host, buf[0..n], x, l.row_y[1] + 1));
+    try std.testing.expectEqual(@as(?usize, null), HiddenSwitcherComponent.rowAt(&host, buf[0..n], x, l.row_y[1] - 1));
+
+    // Filtering drops a repo's heading with its rows.
+    const m = HiddenSwitcherComponent.collectHidden(&sessions, "kimoyo", &buf);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0, 3 }, buf[0..m]);
 }
 
 test "collectHidden filters by folder, case-insensitive" {
@@ -536,21 +617,9 @@ test "collectHidden filters by agent name too" {
     try std.testing.expectEqual(@as(usize, 1), buf[0]); // cadre runs claude
 }
 
-test "rowLabel is title.folder, or folder alone without a title" {
-    var buf: [288]u8 = undefined;
-    try std.testing.expectEqualStrings("claude.cadre", HiddenSwitcherComponent.rowLabel(test_sessions[1], &buf));
-    try std.testing.expectEqualStrings("cacha", HiddenSwitcherComponent.rowLabel(test_sessions[3], &buf));
-}
-
-test "displayTitle: keep user names full, cap auto-generated (spaced) names" {
-    var buf: [64]u8 = undefined;
-    // No spaces = a name you set -> always full, even when long.
-    try std.testing.expectEqualStrings("backend", HiddenSwitcherComponent.displayTitle("backend", &buf));
-    try std.testing.expectEqualStrings("backend-refactor-v2", HiddenSwitcherComponent.displayTitle("backend-refactor-v2", &buf));
-    // Spaces = auto-generated sentence -> capped at 10 + ellipsis.
-    try std.testing.expectEqualStrings("Fix the lo\u{2026}", HiddenSwitcherComponent.displayTitle("Fix the login bug", &buf));
-    // Short phrase (has a space but <= 10 chars) -> left as-is.
-    try std.testing.expectEqualStrings("Fix bug", HiddenSwitcherComponent.displayTitle("Fix bug", &buf));
+test "rowName is the agent's name, or shell without one" {
+    try std.testing.expectEqualStrings("claude", HiddenSwitcherComponent.rowName(test_sessions[1]));
+    try std.testing.expectEqualStrings("shell", HiddenSwitcherComponent.rowName(test_sessions[3]));
 }
 
 test "collectHidden returns 0 when nothing is hidden" {
@@ -614,33 +683,18 @@ test "backspaceQuery removes a whole UTF-8 codepoint" {
 
 test "closeRect sits inside its row at the right edge" {
     const theme = colors.Theme.default();
-    const host = types.UiHost{
-        .now_ms = 0,
-        .window_w = 1200,
-        .window_h = 800,
-        .ui_scale = 1.0,
-        .grid_cols = 1,
-        .grid_rows = 1,
-        .cell_w = 0,
-        .cell_h = 0,
-        .term_cols = 80,
-        .term_rows = 24,
-        .view_mode = .Grid,
-        .focused_session = 0,
-        .focused_cwd = null,
-        .focused_has_foreground_process = false,
-        .sessions = &test_sessions,
-        .theme = &theme,
-    };
-    const l = HiddenSwitcherComponent.computeLayout(&host, 2);
+    const host = testHost(&test_sessions, &theme);
+    var buf: [max_entries]usize = undefined;
+    const entries = buf[0..HiddenSwitcherComponent.collectHidden(&test_sessions, "", &buf)];
+    const l = HiddenSwitcherComponent.computeLayout(&host, entries);
     const r1 = HiddenSwitcherComponent.closeRect(l, 1);
-    const row1_y = l.rows_y0 + l.row_h;
+    const row1_y = l.row_y[1];
     try std.testing.expect(r1.y >= row1_y and r1.y + r1.h <= row1_y + l.row_h);
     try std.testing.expectEqual(l.modal.x + l.modal.w - l.pad, r1.x + r1.w);
     // The X's center is a row hit AND a close hit; the row's left edge is a row hit only.
     const cx = r1.x + @divFloor(r1.w, 2);
     const cy = r1.y + @divFloor(r1.h, 2);
-    try std.testing.expectEqual(@as(?usize, 1), HiddenSwitcherComponent.rowAt(&host, 2, cx, cy));
+    try std.testing.expectEqual(@as(?usize, 1), HiddenSwitcherComponent.rowAt(&host, entries, cx, cy));
     try std.testing.expect(geom.containsPoint(r1, cx, cy));
     try std.testing.expect(!geom.containsPoint(r1, l.modal.x + l.pad, cy));
 }
