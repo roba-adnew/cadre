@@ -63,6 +63,10 @@ const NoView = struct {
     pub fn setFrame(_: *NoView, _: geom.Rect, _: c_int, _: c_int) void {}
     pub fn setHidden(_: *NoView, _: bool) void {}
     pub fn setColors(_: *NoView, _: Rgb, _: Rgb, _: Rgb) void {}
+    pub fn setStyle(_: *NoView, _: Style) void {}
+    pub fn hasSelection(_: *const NoView) bool {
+        return false;
+    }
     pub fn focus(_: *NoView) void {}
     pub fn unfocus(_: *NoView) void {}
     pub fn isFocused(_: *const NoView) bool {
@@ -92,6 +96,25 @@ const NoView = struct {
 
 pub const Edit = enum { cut, copy, paste, select_all, undo, redo };
 
+/// How the box sets its text.
+pub const Style = union(enum) {
+    /// The system font, padded: a box of its own under the terminal.
+    docked: struct { font_pt: f64 },
+    /// A terminal's font laid on that terminal's rows, flush with the box's
+    /// edges, so the box can stand in for a stretch of the screen. Sizes are
+    /// render pixels of a window `render_h` tall.
+    terminal: struct {
+        /// The font file's name without its extension ("JetBrainsMono-Regular"),
+        /// which is what the font is called for nearly every font.
+        font_name: []const u8,
+        font_px: c_int,
+        cell_h: c_int,
+        /// Baseline, measured down from the top of a cell.
+        ascent: c_int,
+        render_h: c_int,
+    },
+};
+
 const AppKitView = struct {
     window: *c.SDL_Window,
     ns_window: Id,
@@ -103,9 +126,12 @@ const AppKitView = struct {
     /// and Cmd+Z did nothing. Handed out by the delegate's undoManagerForTextView:.
     undo: Id,
     frame: [4]f64 = .{ -1, -1, -1, -1 },
+    inset_h: f64 = docked_inset_h,
 
-    const inset_w: f64 = 12;
-    const inset_h: f64 = 9;
+    const docked_inset_w: f64 = 12;
+    const docked_inset_h: f64 = 9;
+    /// NSTextContainer's own default side padding.
+    const docked_line_pad: f64 = 5;
     const huge: f64 = 1.0e7;
 
     pub fn create(window: *c.SDL_Window, font_pt: f64) ?AppKitView {
@@ -146,11 +172,12 @@ const AppKitView = struct {
         send(void, text, "setAutomaticTextReplacementEnabled:", .{false});
         send(void, text, "setAutomaticSpellingCorrectionEnabled:", .{false});
         send(void, text, "setContinuousSpellCheckingEnabled:", .{true});
-        send(void, text, "setTextContainerInset:", .{ inset_w, inset_h });
+        send(void, text, "setTextContainerInset:", .{ docked_inset_w, docked_inset_h });
         if (send(Id, cls("NSFont"), "systemFontOfSize:", .{font_pt})) |font| send(void, text, "setFont:", .{font});
 
         const delegate = send(Id, allocClass(delegate_cls), "init", .{});
         send(void, text, "setDelegate:", .{delegate});
+        send(void, send(Id, text, "layoutManager", .{}), "setDelegate:", .{delegate});
         send(void, scroll, "setDocumentView:", .{text});
         send(void, scroll, "setHidden:", .{true});
         send(void, content, "addSubview:", .{scroll});
@@ -164,6 +191,7 @@ const AppKitView = struct {
     pub fn destroy(self: *AppKitView) void {
         unregisterView(self.text);
         send(void, self.text, "setDelegate:", .{@as(Id, null)});
+        send(void, send(Id, self.text, "layoutManager", .{}), "setDelegate:", .{@as(Id, null)});
         send(void, self.scroll, "removeFromSuperview", .{});
         send(void, self.text, "release", .{});
         send(void, self.scroll, "release", .{});
@@ -196,6 +224,53 @@ const AppKitView = struct {
         send(void, self.text, "setBackgroundColor:", .{bg_color});
         send(void, self.text, "setTextColor:", .{color(fg)});
         send(void, self.text, "setInsertionPointColor:", .{color(caret)});
+    }
+
+    pub fn setStyle(self: *AppKitView, style: Style) void {
+        const container = send(Id, self.text, "textContainer", .{});
+        switch (style) {
+            .docked => |docked| {
+                setLineMetrics(self.text, 0, 0);
+                if (send(Id, cls("NSFont"), "systemFontOfSize:", .{docked.font_pt})) |font| send(void, self.text, "setFont:", .{font});
+                send(void, self.text, "setTextContainerInset:", .{ docked_inset_w, docked_inset_h });
+                send(void, container, "setLineFragmentPadding:", .{docked_line_pad});
+                self.inset_h = docked_inset_h;
+            },
+            .terminal => |term| {
+                var points_w: c_int = 0;
+                var points_h: c_int = 0;
+                _ = c.SDL_GetWindowSize(self.window, &points_w, &points_h);
+                if (points_h <= 0 or term.render_h <= 0) return;
+                const per_px = fl(points_h) / fl(term.render_h);
+                // Before the font: setting it lays the text out again.
+                setLineMetrics(self.text, fl(term.cell_h) * per_px, fl(term.ascent) * per_px);
+                if (terminalFont(term.font_name, fl(term.font_px) * per_px)) |font| send(void, self.text, "setFont:", .{font});
+                send(void, self.text, "setTextContainerInset:", .{ @as(f64, 0), @as(f64, 0) });
+                send(void, container, "setLineFragmentPadding:", .{@as(f64, 0)});
+                self.inset_h = 0;
+            },
+        }
+        // The line metrics may have changed under an unchanged font.
+        const layout = send(Id, self.text, "layoutManager", .{});
+        send(void, layout, "invalidateLayoutForCharacterRange:actualCharacterRange:", .{ @as(usize, 0), self.textLength(), @as(?*anyopaque, null) });
+    }
+
+    fn terminalFont(name: []const u8, size_pt: f64) Id {
+        var buf: [128]u8 = undefined;
+        if (name.len < buf.len) {
+            @memcpy(buf[0..name.len], name);
+            buf[name.len] = 0;
+            const z: [*:0]const u8 = @ptrCast(&buf);
+            const ns_name = send(Id, cls("NSString"), "stringWithUTF8String:", .{z});
+            if (send(Id, cls("NSFont"), "fontWithName:size:", .{ ns_name, size_pt })) |font| return font;
+        }
+        log.warn("no font named '{s}' for the composer; using the system's fixed-pitch font", .{name});
+        return send(Id, cls("NSFont"), "userFixedPitchFontOfSize:", .{size_pt});
+    }
+
+    /// Some of the box's text is selected (so Cmd+C is about the box).
+    pub fn hasSelection(self: *const AppKitView) bool {
+        return send(NSRange, self.text, "selectedRange", .{}).len > 0;
     }
 
     /// Caller stops SDL text input first; otherwise SDL's own text field keeps
@@ -256,7 +331,7 @@ const AppKitView = struct {
         const container = send(Id, self.text, "textContainer", .{});
         send(void, layout, "ensureLayoutForTextContainer:", .{container});
         const used = send(NSRect, layout, "usedRectForTextContainer:", .{container});
-        const points = used.h + inset_h * 2;
+        const points = used.h + self.inset_h * 2;
         return @intFromFloat(@ceil(points * fl(render_h) / fl(points_h)));
     }
 
@@ -302,6 +377,7 @@ const AppKitView = struct {
     const Id = ?*anyopaque;
     const NSSize = extern struct { w: f64, h: f64 };
     const NSRect = extern struct { x: f64, y: f64, w: f64, h: f64 };
+    const NSRange = extern struct { loc: usize, len: usize };
 
     fn cls(name: [*:0]const u8) Id {
         return @ptrCast(objc.objc_getClass(name));
@@ -382,6 +458,12 @@ const AppKitView = struct {
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textViewDidChangeSelection:"), @ptrCast(&didChangeSelection), "v@:@");
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("undoManagerForTextView:"), @ptrCast(&undoManagerForTextView), "@@:@");
         _ = objc.class_addMethod(new_cls, objc.sel_registerName("textDidChange:"), @ptrCast(&textDidChange), "v@:@");
+        _ = objc.class_addMethod(
+            new_cls,
+            objc.sel_registerName("layoutManager:shouldSetLineFragmentRect:lineFragmentUsedRect:baselineOffset:inTextContainer:forGlyphRange:"),
+            @ptrCast(&shouldSetLineFragmentRect),
+            "c@:@^{CGRect={CGPoint=dd}{CGSize=dd}}^{CGRect={CGPoint=dd}{CGSize=dd}}^d@{_NSRange=QQ}",
+        );
         objc.objc_registerClassPair(new_cls);
         return @ptrCast(new_cls);
     }
@@ -421,6 +503,33 @@ const AppKitView = struct {
         if (c.SDL_TextInputActive(window)) _ = c.SDL_StopTextInput(window);
     }
 
+    // The layout manager's delegate, for `Style.terminal`: every line is exactly
+    // one terminal cell tall with its baseline where the terminal puts a cell's,
+    // whatever leading the font would ask for itself.
+    fn shouldSetLineFragmentRect(_: Id, _: Id, _: Id, line_rect: *NSRect, used_rect: *NSRect, baseline: *f64, container: Id, _: NSRange) callconv(.c) u8 {
+        const text_view = send(Id, container, "textView", .{});
+        for (registry) |entry| {
+            if (text_view == null or entry.text_view != text_view) continue;
+            if (entry.line_h <= 0) return 0;
+            line_rect.h = entry.line_h;
+            used_rect.h = entry.line_h;
+            baseline.* = entry.baseline;
+            return 1;
+        }
+        return 0;
+    }
+
+    /// Line height and baseline (points) the layout delegate gives `text_view`'s
+    /// lines; 0 leaves them to the font.
+    fn setLineMetrics(text_view: Id, line_h: f64, baseline: f64) void {
+        for (&registry) |*entry| {
+            if (entry.text_view == text_view) {
+                entry.line_h = line_h;
+                entry.baseline = baseline;
+            }
+        }
+    }
+
     fn undoManagerForTextView(_: Id, _: Id, text_view: Id) callconv(.c) Id {
         for (registry) |entry| {
             if (text_view != null and entry.text_view == text_view) return entry.undo;
@@ -430,7 +539,7 @@ const AppKitView = struct {
 
     // Text view -> SDL window and undo manager, for the delegate callbacks
     // (main thread only).
-    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null, undo: Id = null, edited: bool = false };
+    const Registration = struct { text_view: Id = null, window: ?*c.SDL_Window = null, undo: Id = null, edited: bool = false, line_h: f64 = 0, baseline: f64 = 0 };
 
     // NSTextDidChangeNotification: posted for the user's edits only, not for
     // setString: (so loading a draft doesn't count as editing it).

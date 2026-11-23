@@ -69,6 +69,42 @@ test "hiddenNeedsAttention only flags hidden awaiting_approval sessions" {
     try std.testing.expect(hiddenNeedsAttention(&sessions));
 }
 
+/// Where Claude Code's own input box sits on the focused pane's screen, as rows
+/// of the active screen: the rule above it, then its first and last text rows.
+/// The rule below it is row `last + 1`.
+pub const PromptBox = struct {
+    top_rule: u16,
+    first: u16,
+    last: u16,
+
+    pub fn textRows(self: PromptBox) u16 {
+        return self.last - self.first + 1;
+    }
+};
+
+/// Columns Claude Code's input box keeps left of its text, for the "\u{276F} " mark.
+pub const prompt_gutter_cols: c_int = 2;
+
+/// The composer's box reaches `px` pixels above Claude's input box and covers
+/// what was there, so the renderer redraws the box's top rule and prompt mark
+/// that much higher (renderer.liftPromptRows). Pixels, not rows: the box can
+/// be part-way through a slide.
+pub const PromptLift = struct {
+    top_rule: u16,
+    first: u16,
+    px: c_int,
+};
+
+/// The font full-view terminals are drawn in, in render pixels.
+pub const TermFont = struct {
+    cell_w: c_int = 0,
+    cell_h: c_int = 0,
+    /// The size it was opened at.
+    px: c_int = 0,
+    /// Baseline, measured down from the top of a cell.
+    ascent: c_int = 0,
+};
+
 pub const UiHost = struct {
     now_ms: i64,
 
@@ -88,6 +124,8 @@ pub const UiHost = struct {
     /// Grid font's pixel size (already DPI-scaled), so chrome text like the
     /// cwd bar can match the terminal text. 0 = unknown (fall back to fixed).
     grid_font_px: c_int = 0,
+    /// Unknown (all zero) for callers that never show a full-view terminal.
+    full_font: TermFont = .{},
     term_cols: u16,
     term_rows: u16,
 
@@ -99,6 +137,8 @@ pub const UiHost = struct {
 
     sessions: []const SessionUiInfo,
     theme: *const colors.Theme,
+    /// Claude Code's input box on the focused pane's screen, while it shows there.
+    prompt_box: ?PromptBox = null,
 
     mouse_x: c_int = 0,
     mouse_y: c_int = 0,

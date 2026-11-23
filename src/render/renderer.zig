@@ -16,6 +16,7 @@ const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
 const scrollbar = @import("../ui/components/scrollbar.zig");
 const cwd_bar_metrics = @import("../ui/components/cwd_bar_metrics.zig");
+const ui_types = @import("../ui/types.zig");
 
 const log = std.log.scoped(.render);
 
@@ -125,6 +126,8 @@ pub fn render(
     grid: ?*const GridLayout,
     window_focused: bool,
     inactive_overlay_alpha: u8,
+    /// Full view: the composer's box reaches this far above Claude's input box.
+    prompt_lift: ?ui_types.PromptLift,
 ) RenderError!void {
     _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
     _ = c.SDL_RenderClear(renderer);
@@ -184,6 +187,9 @@ pub fn render(
             const focused_session = sessions[anim_state.focused_session];
             const focused_dims = sessionTermDims(focused_session, term_cols, term_rows);
             try renderSessionCached(renderer, focused_session, &views[anim_state.focused_session], entry, full_rect, 1.0, true, false, true, null, font, focused_dims.cols, focused_dims.rows, current_time, false, theme, ui_scale);
+            if (prompt_lift) |lift| {
+                if (entry.texture) |tex| liftPromptRows(renderer, tex, full_rect, lift, font, theme, ui_scale);
+            }
         },
         .PanningLeft, .PanningRight => {
             const elapsed = current_time - anim_state.start_time;
@@ -357,6 +363,45 @@ pub fn render(
             else => drawInactiveBorder(renderer, .{ .x = 0, .y = 0, .w = window_width, .h = window_height }, color, ui_scale),
         }
     }
+}
+
+/// The composer's box (ui/components/composer.zig) sits on Claude Code's input
+/// box and reaches `lift.px` pixels above it, over the conversation's last
+/// rows. Move that box's top rule and its prompt mark up to the grown box's
+/// top, as the very pixels the terminal drew (`tex` is the pane's texture, laid
+/// out like `rect`), and blank what the box now stands on. The native box
+/// covers its own rect; this is the part of the terminal left around it.
+/// ponytail: blanks with the theme's background, like the box; a program that
+/// set its own (OSC 11) shows a seam.
+fn liftPromptRows(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect, lift: ui_types.PromptLift, font: *const font_mod.Font, theme: *const colors.Theme, ui_scale: f32) void {
+    const padding = dpi.scale(terminal_padding, ui_scale);
+    const cell_h = font.cell_height;
+    const gutter_w = ui_types.prompt_gutter_cols * font.cell_width;
+    const content_w = rect.w - padding * 2;
+    const up = lift.px;
+    // Texture-local tops of the rule's row and the input's first row.
+    const rule_y = padding + @as(c_int, lift.top_rule) * cell_h;
+    const first_y = padding + @as(c_int, lift.first) * cell_h;
+    if (content_w <= 0 or rule_y - up < 0) return;
+
+    _ = c.SDL_SetRenderDrawColor(renderer, theme.background.r, theme.background.g, theme.background.b, 255);
+    const fill = struct {
+        fn f(r: *c.SDL_Renderer, x: c_int, y: c_int, w: c_int, h: c_int) void {
+            _ = c.SDL_RenderFillRect(r, &c.SDL_FRect{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) });
+        }
+    }.f;
+    const copyUp = struct {
+        fn f(r: *c.SDL_Renderer, t: *c.SDL_Texture, dx: c_int, dy: c_int, x: c_int, y: c_int, w: c_int, h: c_int, by: c_int) void {
+            const src = c.SDL_FRect{ .x = @floatFromInt(x), .y = @floatFromInt(y), .w = @floatFromInt(w), .h = @floatFromInt(h) };
+            const dst = c.SDL_FRect{ .x = @floatFromInt(dx + x), .y = @floatFromInt(dy + y - by), .w = @floatFromInt(w), .h = @floatFromInt(h) };
+            _ = c.SDL_RenderTexture(r, t, &src, &dst);
+        }
+    }.f;
+    // From the rule's new row down to the input's first row, then the old mark.
+    fill(renderer, rect.x + padding, rect.y + rule_y - up, content_w, first_y - (rule_y - up));
+    fill(renderer, rect.x + padding, rect.y + first_y, gutter_w, cell_h);
+    copyUp(renderer, tex, rect.x, rect.y, padding, rule_y, content_w, cell_h, up);
+    copyUp(renderer, tex, rect.x, rect.y, padding, first_y, gutter_w, cell_h, up);
 }
 
 fn drawInactiveBorder(renderer: *c.SDL_Renderer, rect: Rect, color: c.SDL_Color, ui_scale: f32) void {

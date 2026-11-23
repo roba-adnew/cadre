@@ -2382,6 +2382,7 @@ const Window = struct {
         self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
         cwd_bar_component.composer = self.composer_component;
         self.composer_component.id_line = cwd_bar_component;
+        self.composer_component.animate = app.animations_enabled;
         for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
 
@@ -2431,6 +2432,16 @@ const Window = struct {
         const grid_render_height = adjustedRenderHeightForMode(.Grid, self.render_height, self.ui_scale, self.grid.rows);
         const full_render_height = @max(0, self.render_height - self.composer_height);
         return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+    }
+
+    /// The full-view font's metrics, for UI drawn onto a full-view terminal's rows.
+    fn fullFont(self: *const Window) ui_mod.TermFont {
+        return .{
+            .cell_w = self.font.cell_width,
+            .cell_h = self.font.cell_height,
+            .px = layout.scaledFontSize(self.font_size, self.ui_scale),
+            .ascent = @intFromFloat(self.font.primary_metrics.ascent),
+        };
     }
 
     /// Re-read each tile's composer reserve; true when any changed (a Claude
@@ -3073,6 +3084,7 @@ const Window = struct {
             self.grid_font.cell_width,
             self.grid_font.cell_height,
             self.grid_font_size,
+            self.fullFont(),
             self.grid.cols,
             self.grid.rows,
             self.full_cols,
@@ -3881,6 +3893,7 @@ const Window = struct {
             self.grid_font.cell_width,
             self.grid_font.cell_height,
             self.grid_font_size,
+            self.fullFont(),
             self.grid.cols,
             self.grid.rows,
             self.full_cols,
@@ -4268,6 +4281,7 @@ const Window = struct {
                     self.grid_font.cell_width,
                     self.grid_font.cell_height,
                     self.grid_font_size,
+                    self.fullFont(),
                     self.grid.cols,
                     self.grid.rows,
                     self.full_cols,
@@ -4441,6 +4455,7 @@ const Window = struct {
             self.grid_font.cell_width,
             self.grid_font.cell_height,
             self.grid_font_size,
+            self.fullFont(),
             self.grid.cols,
             self.grid.rows,
             self.full_cols,
@@ -4521,6 +4536,7 @@ const Window = struct {
                 &self.grid,
                 self.window_focused,
                 @intCast(app.config.ui.inactive_overlay_alpha),
+                self.composer_component.promptLiftNow(),
             ) catch |err| {
                 log.err("render failed: {}", .{err});
                 return err;
