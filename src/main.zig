@@ -36,7 +36,6 @@ test {
     _ = @import("render/renderer.zig");
     _ = @import("ui/components/find_bar.zig");
     _ = @import("tmux.zig");
-    _ = @import("ui/components/cwd_bar.zig");
     _ = @import("session/hosting.zig");
     _ = @import("session/notify.zig");
     _ = @import("ui/types.zig");

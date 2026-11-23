@@ -426,21 +426,6 @@ fn highestVisibleIndex(sessions: []const *SessionState) ?usize {
     return null;
 }
 
-fn adjustedRenderHeightForMode(mode: app_state.ViewMode, render_height: c_int, ui_scale: f32, grid_rows: usize) c_int {
-    return switch (mode) {
-        .Grid => blk: {
-            const cell_height = @divFloor(render_height, @as(c_int, @intCast(grid_rows)));
-            const reserved_per_cell: c_int = if (cell_height >= ui_mod.cwd_bar.minCellHeight(ui_scale))
-                ui_mod.cwd_bar.reservedHeight(ui_scale)
-            else
-                0;
-            const reserved_total = reserved_per_cell * @as(c_int, @intCast(grid_rows));
-            break :blk @max(0, render_height - reserved_total);
-        },
-        .Collapsing, .GridResizing, .Expanding, .Full, .PanningLeft, .PanningRight, .PanningUp, .PanningDown => render_height,
-    };
-}
-
 /// Which sessions need full-window cell dimensions for the given view mode.
 /// During Panning the previous session is still visible at full size on its way
 /// off-screen, so it stays at full size until the pan completes.
@@ -2120,7 +2105,6 @@ const Window = struct {
         }
 
         const initial_view_mode: app_state.ViewMode = if (initial_terminal_count == 1) .Full else .Grid;
-        const initial_term_render_height = adjustedRenderHeightForMode(initial_view_mode, self.render_height, self.ui_scale, self.grid.rows);
         const initial_sizes = self.computeTerminalSizes();
         self.full_cols = initial_sizes.full.cols;
         self.full_rows = initial_sizes.full.rows;
@@ -2133,7 +2117,7 @@ const Window = struct {
 
         const terminal_padding = dpi.scale(renderer_mod.terminal_padding, self.ui_scale);
         const usable_width = @max(0, self.render_width - terminal_padding * 2);
-        const usable_height = @max(0, initial_term_render_height - terminal_padding * 2);
+        const usable_height = @max(0, self.render_height - terminal_padding * 2);
 
         // All sessions seed at grid-cell size. The first applyTerminalLayoutIfSizeChanged
         // promotes the focused session to full size if the initial view is Full.
@@ -2369,8 +2353,6 @@ const Window = struct {
         try self.ui.register(self.confirm_dialog_component.asComponent());
         const global_shortcuts_component = try ui_mod.global_shortcuts.GlobalShortcutsComponent.create(allocator);
         try self.ui.register(global_shortcuts_component);
-        const cwd_bar_component = try ui_mod.cwd_bar.CwdBarComponent.init(allocator);
-        try self.ui.register(cwd_bar_component.asComponent());
         self.metrics_overlay_component = try ui_mod.metrics_overlay.MetricsOverlayComponent.init(allocator);
         try self.ui.register(self.metrics_overlay_component.asComponent());
         self.diff_overlay_component = try ui_mod.diff_overlay.DiffOverlayComponent.init(allocator);
@@ -2380,8 +2362,6 @@ const Window = struct {
         self.story_overlay_component = try ui_mod.story_overlay.StoryOverlayComponent.init(allocator);
         try self.ui.register(self.story_overlay_component.asComponent());
         self.composer_component = try ui_mod.composer.ComposerComponent.init(allocator, self.pw.window, &self.ui);
-        cwd_bar_component.composer = self.composer_component;
-        self.composer_component.id_line = cwd_bar_component;
         self.composer_component.animate = app.animations_enabled;
         for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
@@ -2425,13 +2405,11 @@ const Window = struct {
         return layout.applyTerminalResize(self.sessions, self.app.allocator, sizes, full_set, self.grid_reserve_px);
     }
 
-    /// Computes both terminal sizes from the raw render dimensions. grid_size
-    /// always uses the Grid-mode CWD-bar reservation so unfocused sessions stay at
-    /// stable dims across view-mode toggles; full_size uses the raw render height.
+    /// Computes both terminal sizes from the raw render dimensions; full_size
+    /// gives up the docked composer's rows.
     fn computeTerminalSizes(self: *Window) layout.Sizes {
-        const grid_render_height = adjustedRenderHeightForMode(.Grid, self.render_height, self.ui_scale, self.grid.rows);
         const full_render_height = @max(0, self.render_height - self.composer_height);
-        return layout.calculateTerminalSizes(&self.font, self.render_width, grid_render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
+        return layout.calculateTerminalSizes(&self.font, self.render_width, self.render_height, full_render_height, self.grid_font.cell_width, self.grid_font.cell_height, self.grid.cols, self.grid.rows, self.ui_scale);
     }
 
     /// The grid font's metrics, for UI drawn onto a grid tile's rows.
@@ -5719,16 +5697,6 @@ fn reloadTestScaleChange(ctx: *TestScaleChangeContext) TestScaleChangeError!void
 
 fn resizeTestScaleChange(ctx: *TestScaleChangeContext) void {
     ctx.resize_calls += 1;
-}
-
-test "adjustedRenderHeightForMode reserves cwd bar only in stable grid mode" {
-    const render_height: c_int = 800;
-    const grid_height = adjustedRenderHeightForMode(.Grid, render_height, 1.0, 2);
-
-    try std.testing.expect(grid_height < render_height);
-    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Collapsing, render_height, 1.0, 2));
-    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.GridResizing, render_height, 1.0, 2));
-    try std.testing.expectEqual(render_height, adjustedRenderHeightForMode(.Full, render_height, 1.0, 2));
 }
 
 test "applyScaleChangeAndResize reloads then resizes when scale changes" {

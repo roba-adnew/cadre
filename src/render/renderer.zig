@@ -15,7 +15,6 @@ const dpi = @import("../dpi.zig");
 const box_drawing = @import("../gfx/box_drawing.zig");
 const session_interaction = @import("../ui/components/session_interaction.zig");
 const scrollbar = @import("../ui/components/scrollbar.zig");
-const cwd_bar_metrics = @import("../ui/components/cwd_bar_metrics.zig");
 const ui_types = @import("../ui/types.zig");
 
 const log = std.log.scoped(.render);
@@ -507,11 +506,7 @@ fn renderSessionContent(
 
     const padding: c_int = dpi.scale(terminal_padding, ui_scale);
     const drawable_w: c_int = rect.w - padding * 2;
-    const grid_reserved_h: c_int = if (is_grid_view and rect.h >= cwd_bar_metrics.minCellHeight(ui_scale, grid_border_thickness))
-        cwd_bar_metrics.reservedHeight(ui_scale, grid_border_thickness)
-    else
-        0;
-    const drawable_h: c_int = rect.h - padding * 2 - grid_reserved_h;
+    const drawable_h: c_int = rect.h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return;
 
     const origin_x: c_int = rect.x + padding;

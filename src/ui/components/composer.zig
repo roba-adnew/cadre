@@ -40,8 +40,6 @@ const UiRoot = @import("../root.zig").UiRoot;
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
 const view_mod = @import("composer_view.zig");
 const renderer_mod = @import("../../render/renderer.zig");
-const cwd_bar_metrics = @import("cwd_bar_metrics.zig");
-const CwdBarComponent = @import("cwd_bar.zig").CwdBarComponent;
 const search_utils = @import("search_utils.zig");
 const easing = @import("../../anim/easing.zig");
 
@@ -188,9 +186,8 @@ pub fn dockArea(host: *const types.UiHost) ?Rect {
 /// sense when a tile has room for it.
 fn tileFitsBox(host: *const types.UiHost) bool {
     const border = dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale);
-    const bar = dpi.scale(cwd_bar_metrics.height, host.ui_scale);
     return host.cell_w - border * 2 > 0 and
-        host.cell_h - border * 2 >= dpi.scale(min_height_pt, host.ui_scale) * 3 + bar;
+        host.cell_h - border * 2 >= dpi.scale(min_height_pt, host.ui_scale) * 3;
 }
 
 pub const LiveBox = struct { session: usize, h: c_int };
@@ -210,13 +207,11 @@ pub fn tileBoxPx(host: *const types.UiHost, i: usize, live: ?LiveBox) c_int {
 }
 
 /// Pixels grid tile `i`'s PTY gives up for its box: the box and the gap above
-/// it, less the id line's row that every tile already reserves (on a Claude
-/// tile the id sits at the right end of the box's row instead).
+/// it.
 pub fn tileReservePx(host: *const types.UiHost, i: usize, live: ?LiveBox) c_int {
     const box = tileBoxPx(host, i, live);
     if (box <= 0) return 0;
-    const id_row = cwd_bar_metrics.reservedHeight(host.ui_scale, renderer_mod.grid_border_thickness);
-    return @max(0, box + dpi.scale(status_gap_pt, host.ui_scale) - id_row);
+    return box + dpi.scale(status_gap_pt, host.ui_scale);
 }
 
 /// Top of a box `status_gap_pt` under a terminal whose rows end at
@@ -229,23 +224,19 @@ pub fn boxTop(term_bottom: c_int, term_h: c_int, docked_y: c_int, ui_scale: f32)
     return std.math.clamp(want, docked_y - dpi.scale(min_height_pt * 2, ui_scale), docked_y);
 }
 
-/// Grid tile `i`'s box (`h` tall) under its terminal's last row. The tile's
-/// id line takes the right end of that row (`id_w`, at most half), so the box
-/// stops there and its text wraps before the id.
-pub fn tileBoxRect(host: *const types.UiHost, i: usize, h: c_int, id_w: c_int) Rect {
+/// Grid tile `i`'s box (`h` tall) under its terminal's last row.
+pub fn tileBoxRect(host: *const types.UiHost, i: usize, h: c_int) Rect {
     var r = tileStrip(host, i, h);
     const top: c_int = @as(c_int, @intCast(i / host.grid_cols)) * host.cell_h;
     const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     const term_h = host.sessions[i].term_h_px;
     r.y = boxTop(top + pad + term_h, term_h, r.y, host.ui_scale);
-    r.w -= @min(@max(0, id_w), @divFloor(r.w, 2));
     return r;
 }
 
-/// The docked `box` moved up under the focused terminal's last row (in the
-/// grid, also short of the tile's id line).
-pub fn placeBox(host: *const types.UiHost, box: Rect, id_w: c_int) Rect {
-    if (host.view_mode == .Grid) return tileBoxRect(host, host.focused_session, box.h, id_w);
+/// The docked `box` moved up under the focused terminal's last row.
+pub fn placeBox(host: *const types.UiHost, box: Rect) Rect {
+    if (host.view_mode == .Grid) return tileBoxRect(host, host.focused_session, box.h);
     const pad = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     const term_h = host.sessions[host.focused_session].term_h_px;
     var r = box;
@@ -292,16 +283,13 @@ pub fn surfaceOf(host: *const types.UiHost, i: usize) ?Surface {
     if (font.cell_w <= 0 or font.cell_h <= 0 or host.grid_cols == 0) return null;
     const tile_x = @as(c_int, @intCast(i % host.grid_cols)) * host.cell_w;
     const tile_y = @as(c_int, @intCast(i / host.grid_cols)) * host.cell_h;
-    const border = renderer_mod.grid_border_thickness;
-    // The tile's id line keeps a row's worth free under the terminal's rows.
-    const id_row = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, border)) cwd_bar_metrics.reservedHeight(host.ui_scale, border) else 0;
     return .{
         .x = tile_x + pad,
         .y = tile_y + pad,
-        .bottom = tile_y + host.cell_h - dpi.scale(border, host.ui_scale),
+        .bottom = tile_y + host.cell_h - dpi.scale(renderer_mod.grid_border_thickness, host.ui_scale),
         .font = font,
         .cols = @divFloor(host.cell_w - pad * 2, font.cell_w),
-        .rows = @divFloor(host.cell_h - pad * 2 - id_row, font.cell_h),
+        .rows = @divFloor(host.cell_h - pad * 2, font.cell_h),
     };
 }
 
@@ -453,8 +441,6 @@ pub const ComposerComponent = struct {
     /// Where the box is drawn (`placeBox`).
     rect: Rect = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     box_h: c_int = 0,
-    /// Draws each grid tile's id line; the box stops short of it.
-    id_line: ?*const CwdBarComponent = null,
     theme_key: ?[2]c.SDL_Color = null,
     /// Unsent text of panes not currently shown, by persist_index.
     drafts: std.AutoHashMapUnmanaged(usize, []u8) = .empty,
@@ -662,10 +648,9 @@ pub const ComposerComponent = struct {
             self.slid = slideFraction(slide.from, slide.to, host.now_ms - slide.start_ms);
             if (self.slid == slide.to) self.slide = null;
         }
-        const id_w = self.idWidthPx(host.focused_session);
         const in_grid = host.view_mode == .Grid;
         const placement = self.place(host);
-        var rect = self.boxRect(host, placement, id_w) orelse self.rect;
+        var rect = self.boxRect(host, placement) orelse self.rect;
         const on_prompt = placement == .on_prompt;
         const show = placement != .none and !self.covered(host, rect);
 
@@ -718,7 +703,7 @@ pub const ComposerComponent = struct {
             self.applyTheme(view, host, on_prompt);
             view.setFrame(rect, host.window_w, host.window_h);
             self.content_h = view.contentHeightPx(host.window_h);
-            rect = self.boxRect(host, placement, id_w) orelse rect;
+            rect = self.boxRect(host, placement) orelse rect;
             self.box_h = rect.h;
             view.setFrame(rect, host.window_w, host.window_h);
         }
@@ -776,10 +761,10 @@ pub const ComposerComponent = struct {
         return if (dockArea(host)) |area| .{ .docked = area } else .none;
     }
 
-    fn boxRect(self: *const ComposerComponent, host: *const types.UiHost, placement: Placement, id_w: c_int) ?Rect {
+    fn boxRect(self: *const ComposerComponent, host: *const types.UiHost, placement: Placement) ?Rect {
         return switch (placement) {
             .none => null,
-            .docked => |area| placeBox(host, composerRect(area, self.content_h, host.ui_scale), id_w),
+            .docked => |area| placeBox(host, composerRect(area, self.content_h, host.ui_scale)),
             .on_prompt => |on| slidRect(inlineRect(on.surface, on.spot, inlineRows(on.surface, on.spot, self.content_h)), self.slid, on.surface.bottom),
         };
     }
@@ -1024,20 +1009,6 @@ pub const ComposerComponent = struct {
         return tileBoxPx(host, i, self.liveBox());
     }
 
-    fn idWidthPx(self: *const ComposerComponent, i: usize) c_int {
-        const bar = self.id_line orelse return 0;
-        return bar.idWidthPx(i);
-    }
-
-    /// Where cwd_bar.zig draws grid tile `i`'s id line: the right end of the
-    /// first line of its box row, or null on tiles without a box.
-    pub fn idRow(self: *const ComposerComponent, host: *const types.UiHost, i: usize) ?Rect {
-        const h = self.tileBoxH(host, i);
-        if (h <= 0) return null;
-        const row = tileBoxRect(host, i, h, 0);
-        return .{ .x = row.x, .y = row.y, .w = row.w, .h = dpi.scale(min_height_pt, host.ui_scale) };
-    }
-
     fn renderFn(ptr: *anyopaque, host: *const types.UiHost, renderer: *c.SDL_Renderer, assets: *types.UiAssets) void {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
         defer self.first_frame.markDrawn();
@@ -1052,18 +1023,18 @@ pub const ComposerComponent = struct {
                 if (self.visible and i == self.session) continue;
                 const h = self.tileBoxH(host, i);
                 if (h <= 0) continue;
-                const strip = tileBoxRect(host, i, h, self.idWidthPx(i));
+                const strip = tileBoxRect(host, i, h);
                 _ = c.SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
                 _ = c.SDL_RenderFillRect(renderer, &c.SDL_FRect{ .x = @floatFromInt(strip.x), .y = @floatFromInt(strip.y), .w = @floatFromInt(strip.w), .h = @floatFromInt(strip.h) });
-                drawRowBorders(renderer, line, tileBoxRect(host, i, h, 0));
+                drawRowBorders(renderer, line, strip);
                 const draft = self.drafts.get(host.sessions[i].persist_index) orelse continue;
                 self.drawPreview(renderer, host, assets, strip, firstLine(draft));
             }
         }
         // On Claude's input box the rules around it are the terminal's own.
         if (!self.visible or self.inline_mode) return;
-        // The box itself is the native view; its row's borders span the id too.
-        drawRowBorders(renderer, line, if (self.in_grid) tileBoxRect(host, self.session, self.rect.h, 0) else self.rect);
+        // The box itself is the native view.
+        drawRowBorders(renderer, line, self.rect);
     }
 
     /// The toggle, written into the rule under Claude's input box the way
@@ -1297,7 +1268,7 @@ test "boxBackground tints the box red only while the keyboard is away" {
     try testing.expect(@as(i32, away.r) - away.g > @as(i32, home.r) - home.g);
 }
 
-test "dockArea is the whole window in full view, the focused tile above its cwd bar in the grid" {
+test "dockArea is the whole window in full view, the focused tile in the grid" {
     var sessions = [_]types.SessionUiInfo{ .{ .dead = false, .spawned = true }, .{ .dead = false, .spawned = true } };
     var host = testHost(&sessions);
     const full = dockArea(&host) orelse return error.TestUnexpectedResult;
@@ -1310,7 +1281,7 @@ test "dockArea is the whole window in full view, the focused tile above its cwd 
     const border = renderer_mod.grid_border_thickness;
     try testing.expectEqual(@as(c_int, 400 + border), tile.x);
     try testing.expectEqual(@as(c_int, 400 - border * 2), tile.w);
-    try testing.expectEqual(@as(c_int, 600 - border * 2), tile.h); // box at the very bottom, id line above it
+    try testing.expectEqual(@as(c_int, 600 - border * 2), tile.h);
 }
 
 test "tileBoxPx: live box on its tile, a strip on other Claude tiles, nothing on shells" {
@@ -1328,9 +1299,8 @@ test "tileBoxPx: live box on its tile, a strip on other Claude tiles, nothing on
     try testing.expectEqual(@as(c_int, min_height_pt), tileBoxPx(&host, 1, live));
     try testing.expectEqual(@as(c_int, min_height_pt), tileBoxPx(&host, 0, null)); // box hidden: keep the strip
     try testing.expectEqual(@as(c_int, 0), tileBoxPx(&host, 2, live)); // shell tile
-    // The PTY gives up the box and the gap above it, less the id row it already lost.
-    const id_row = cwd_bar_metrics.reservedHeight(1.0, renderer_mod.grid_border_thickness);
-    try testing.expectEqual(@as(c_int, 80 + status_gap_pt - id_row), tileReservePx(&host, 0, live));
+    // The PTY gives up the box and the gap above it.
+    try testing.expectEqual(@as(c_int, 80 + status_gap_pt), tileReservePx(&host, 0, live));
     try testing.expectEqual(@as(c_int, 0), tileReservePx(&host, 2, live));
     host.cell_h = 90; // too small for a box
     try testing.expectEqual(@as(c_int, 0), tileBoxPx(&host, 1, live));
@@ -1347,28 +1317,26 @@ test "placeBox puts the box a gap under the terminal's last row" {
 
     // Full view: one line, `status_gap_pt` under the last row (padding + 500 px).
     const box = composerRect(.{ .x = 0, .y = 0, .w = 800, .h = 600 }, 0, 1.0);
-    const full = placeBox(&host, box, 0);
+    const full = placeBox(&host, box);
     try testing.expectEqual(@as(c_int, pad + 500 + status_gap_pt), full.y);
     try testing.expectEqual(box.h, full.h);
     try testing.expectEqual(box.w, full.w);
     // Unknown PTY height: left docked. A PTY far behind a resize: at most two lines up.
     sessions[0].term_h_px = 0;
-    try testing.expectEqual(box, placeBox(&host, box, 0));
+    try testing.expectEqual(box, placeBox(&host, box));
     sessions[0].term_h_px = 100;
-    try testing.expectEqual(box.y - min_height_pt * 2, placeBox(&host, box, 0).y);
+    try testing.expectEqual(box.y - min_height_pt * 2, placeBox(&host, box).y);
 
-    // Grid tile 1: same gap under its rows; the id line takes the row's right end.
+    // Grid tile 1: same gap under its rows, the tile's full width.
     host.view_mode = .Grid;
     host.focused_session = 1;
     const border = renderer_mod.grid_border_thickness;
     const docked_y = 600 - border - min_height_pt;
     sessions[1].term_h_px = docked_y - pad - status_gap_pt - 5; // 5 px spare under the box
-    const in_tile = placeBox(&host, box, 100);
+    const in_tile = placeBox(&host, box);
     try testing.expectEqual(@as(c_int, docked_y - 5), in_tile.y);
     try testing.expectEqual(@as(c_int, 400 + border), in_tile.x);
-    try testing.expectEqual(@as(c_int, 400 - border * 2 - 100), in_tile.w);
-    // A very long id gets at most half the row.
-    try testing.expectEqual(@divFloor(400 - border * 2, 2), tileBoxRect(&host, 1, min_height_pt, 1000).w);
+    try testing.expectEqual(@as(c_int, 400 - border * 2), in_tile.w);
 }
 
 test "on Claude's input box: the box covers its text rows and grows upward" {
@@ -1425,16 +1393,15 @@ test "on a grid tile the box sits on that tile's rows, in the grid font" {
     host.grid_font = .{ .cell_w = 5, .cell_h = 10, .px = 8, .ascent = 8 };
     const pad = renderer_mod.terminal_padding;
     const border = renderer_mod.grid_border_thickness;
-    const id_row = cwd_bar_metrics.reservedHeight(1.0, border);
 
     // Tile 2 is the second row's first: its rows start a padding in from its
-    // corner and stop above the id line's row.
+    // corner.
     const tile = surfaceOf(&host, 2) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(@as(c_int, pad), tile.x);
     try testing.expectEqual(@as(c_int, 300 + pad), tile.y);
     try testing.expectEqual(@as(c_int, 600 - border), tile.bottom);
     try testing.expectEqual(@divFloor(400 - pad * 2, 5), tile.cols);
-    try testing.expectEqual(@divFloor(300 - pad * 2 - id_row, 10), tile.rows);
+    try testing.expectEqual(@divFloor(300 - pad * 2, 10), tile.rows);
     try testing.expectEqual(host.grid_font, tile.font);
     // Tile 1 is the first row's second.
     try testing.expectEqual(@as(c_int, 400 + pad), surfaceOf(&host, 1).?.x);
@@ -1626,7 +1593,6 @@ test "the box is found by its place among the rows on show, and docks only if ne
     try testing.expect(!composer.fallback_docked);
     try testing.expectEqual(@as(c_int, 0), composer.gridReservePx(&host, 0));
     try testing.expectEqual(@as(c_int, 0), composer.gridReservePx(&host, 1));
-    try testing.expect(composer.idRow(&host, 1) == null); // the id line goes back to its own bar
 
     // And once one has been found, a missing box is a dialog: the composer waits.
     sessions[0].prompt_box = null;

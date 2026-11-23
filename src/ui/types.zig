@@ -130,9 +130,6 @@ pub const UiHost = struct {
     /// Defaults to 0 (hit-test no-ops) for non-grid callers/tests.
     grid_cell_w: c_int = 0,
     grid_cell_h: c_int = 0,
-    /// Grid font's pixel size (already DPI-scaled), so chrome text like the
-    /// cwd bar can match the terminal text. 0 = unknown (fall back to fixed).
-    grid_font_px: c_int = 0,
     /// The fonts of grid tiles and of full view. Unknown (all zero) for
     /// callers that never draw onto a terminal's rows.
     grid_font: TermFont = .{},

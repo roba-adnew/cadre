@@ -15,7 +15,6 @@ const font_mod = @import("../../font.zig");
 const app_state = @import("../../app/app_state.zig");
 const types = @import("../types.zig");
 const scrollbar = @import("scrollbar.zig");
-const cwd_bar_metrics = @import("cwd_bar_metrics.zig");
 const view_state = @import("../session_view_state.zig");
 const UiComponent = @import("../component.zig").UiComponent;
 const FirstFrameGuard = @import("../first_frame_guard.zig").FirstFrameGuard;
@@ -1398,11 +1397,8 @@ const GridHit = struct { idx: usize, pin: ghostty_vt.Pin };
 /// under the cursor, then the cell within that pane's content area.
 ///
 /// Mirrors `renderer.renderSessionContent` cell-for-cell: cells are laid out at the
-/// grid font's native pixel size (grid_render_scale is 1.0), the cwd bar reserves
-/// height at the bottom of each tile, and the active screen scrolls by
-/// `activeScreenRowOffset` to keep the cursor visible. The earlier version stretched
-/// the rows proportionally over the full (un-reserved) tile height, so selection
-/// landed ~one row above the click — worse toward the bottom of the pane.
+/// grid font's native pixel size (grid_render_scale is 1.0), and the active screen
+/// scrolls by `activeScreenRowOffset` to keep the cursor visible.
 fn gridViewHitFromMouse(
     sessions: []*SessionState,
     views: []SessionViewState,
@@ -1430,15 +1426,8 @@ fn gridViewHitFromMouse(
     const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     const origin_x = @as(c_int, @intCast(gc)) * host.cell_w + padding;
     const origin_y = @as(c_int, @intCast(gr)) * host.cell_h + padding;
-    // Grid panes reserve a strip at the bottom for the cwd bar; the renderer drops
-    // it from the drawable height, so the hit-test must too (this was the missing
-    // vertical offset). Same guard as renderer.renderSessionContent.
-    const grid_reserved_h: c_int = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, renderer_mod.grid_border_thickness))
-        cwd_bar_metrics.reservedHeight(host.ui_scale, renderer_mod.grid_border_thickness)
-    else
-        0;
     const drawable_w = host.cell_w - padding * 2;
-    const drawable_h = host.cell_h - padding * 2 - grid_reserved_h;
+    const drawable_h = host.cell_h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return null;
     if (mouse_x < origin_x or mouse_y < origin_y) return null;
 
@@ -1504,12 +1493,8 @@ fn gridTileCellFromMouse(
     const padding = dpi.scale(renderer_mod.terminal_padding, host.ui_scale);
     const origin_x = @as(c_int, @intCast(gc)) * host.cell_w + padding;
     const origin_y = @as(c_int, @intCast(gr)) * host.cell_h + padding;
-    const grid_reserved_h: c_int = if (host.cell_h >= cwd_bar_metrics.minCellHeight(host.ui_scale, renderer_mod.grid_border_thickness))
-        cwd_bar_metrics.reservedHeight(host.ui_scale, renderer_mod.grid_border_thickness)
-    else
-        0;
     const drawable_w = host.cell_w - padding * 2;
-    const drawable_h = host.cell_h - padding * 2 - grid_reserved_h;
+    const drawable_h = host.cell_h - padding * 2;
     if (drawable_w <= 0 or drawable_h <= 0) return null;
     if (mouse_x < origin_x or mouse_y < origin_y) return null;
 
@@ -2316,8 +2301,8 @@ test "encodeClick: press then release at the 1-based cell" {
 }
 
 test "gridCellAt maps by fixed cell size, not proportional stretch" {
-    // 12x16 px cells, 30x20 terminal, content area 200x100 px (cwd bar already
-    // removed). Only 8 rows / 16 cols actually fit and get drawn.
+    // 12x16 px cells, 30x20 terminal, content area 200x100 px. Only 8 rows /
+    // 16 cols actually fit and get drawn.
     const cw = 12;
     const ch = 16;
 

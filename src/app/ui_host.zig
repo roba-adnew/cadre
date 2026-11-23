@@ -114,7 +114,6 @@ pub fn makeUiHost(
         .cell_h = cell_height_pixels,
         .grid_cell_w = grid_font.cell_w,
         .grid_cell_h = grid_font.cell_h,
-        .grid_font_px = grid_font.px,
         .grid_font = grid_font,
         .full_font = full_font,
         .term_cols = term_cols,
