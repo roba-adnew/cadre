@@ -79,6 +79,10 @@ pub const PromptBox = struct {
     top_rule: u16,
     first: u16,
     last: u16,
+    /// Claude's own input holds text (typed or pasted there, or a past message
+    /// recalled with the up arrow), as against being empty or showing a
+    /// dimmed hint.
+    typed: bool = false,
 
     pub fn textRows(self: PromptBox) u16 {
         return self.last - self.first + 1;

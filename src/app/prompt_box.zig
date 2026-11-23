@@ -24,6 +24,8 @@ const prompt_mark: u21 = 0x276F; // ❯
 /// Rows searched, counted up from the bottom of the screen: the box sits just
 /// above the status lines, or above a completion menu opened under it.
 const scan_rows: usize = 30;
+/// Cells of the input's first row looked at for text of the user's.
+const typed_scan_cols: usize = 24;
 
 pub const RowKind = enum { rule, prompt, other };
 
@@ -72,7 +74,35 @@ pub fn find(terminal: *const ghostty_vt.Terminal) ?PromptBox {
     }
     const box = locate(kinds[0..count]) orelse return null;
     const offset: u16 = @intCast(top);
-    return .{ .top_rule = box.top_rule + offset, .first = box.first + offset, .last = box.last + offset };
+    const first = box.first + offset;
+    return .{
+        .top_rule = box.top_rule + offset,
+        .first = first,
+        .last = box.last + offset,
+        // A hint is one row; more rows are the user's own lines.
+        .typed = box.textRows() > 1 or rowHasTypedText(terminal, first),
+    };
+}
+
+/// Whether input row `row` holds text of the user's: something printable, in
+/// the default colour at full strength, right of the prompt mark. The hints
+/// Claude shows in an empty input are dimmed or coloured.
+fn rowHasTypedText(terminal: *const ghostty_vt.Terminal, row: usize) bool {
+    const gutter: usize = @intCast(types.prompt_gutter_cols);
+    const end = @min(@as(usize, terminal.cols), gutter + typed_scan_cols);
+    var col = gutter;
+    while (col < end) : (col += 1) {
+        const point = ghostty_vt.point.Point{ .active = .{ .x = @intCast(col), .y = @intCast(row) } };
+        const list_cell = terminal.screens.active.pages.getCell(point) orelse continue;
+        const cell = list_cell.cell;
+        if (cell.content_tag != .codepoint and cell.content_tag != .codepoint_grapheme) continue;
+        const cp = cell.content.codepoint;
+        if (cp == 0 or cp == ' ' or cp == 0xA0) continue;
+        const style = list_cell.style();
+        if (style.flags.faint or style.fg_color != .none) continue;
+        return true;
+    }
+    return false;
 }
 
 fn cellCodepoint(terminal: *const ghostty_vt.Terminal, col: usize, row: usize) u21 {
@@ -167,6 +197,59 @@ test "locate finds nothing while a dialog has replaced the box" {
         \\──────────────────────────────────────
     )) == null);
     try testing.expect(locate(&.{}) == null);
+}
+
+const Look = enum { plain, dimmed, coloured };
+
+/// A 40x8 terminal showing Claude's input box with `input` after the prompt
+/// mark, written in `look`, and a status line under it.
+fn testTerminal(allocator: std.mem.Allocator, input: []const u8, look: Look) !ghostty_vt.Terminal {
+    var terminal = try ghostty_vt.Terminal.init(allocator, .{ .cols = 40, .rows = 8, .max_scrollback = 0 });
+    errdefer terminal.deinit(allocator);
+    const screen = terminal.screens.active;
+    const rule = "─" ** 40;
+    try screen.testWriteString("reply\n\n" ++ rule ++ "\n❯\u{A0}");
+    switch (look) {
+        .plain => {},
+        .dimmed => try terminal.setAttribute(.{ .faint = {} }),
+        .coloured => try terminal.setAttribute(.{ .@"256_fg" = 244 }),
+    }
+    try screen.testWriteString(input);
+    try terminal.setAttribute(.{ .unset = {} });
+    try screen.testWriteString("\n" ++ rule ++ "\n  status");
+    return terminal;
+}
+
+test "find tells an input holding the user's text from an empty one or a dimmed hint" {
+    const allocator = testing.allocator;
+    {
+        var terminal = try testTerminal(allocator, "", .plain);
+        defer terminal.deinit(allocator);
+        const box = find(&terminal) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(PromptBox{ .top_rule = 2, .first = 3, .last = 3 }, box);
+    }
+    {
+        var terminal = try testTerminal(allocator, "run the tests", .plain);
+        defer terminal.deinit(allocator);
+        try testing.expect((find(&terminal) orelse return error.TestUnexpectedResult).typed);
+    }
+    {
+        // A hint: dimmed, or in a colour of its own.
+        var dimmed = try testTerminal(allocator, "Try \"fix lint errors\"", .dimmed);
+        defer dimmed.deinit(allocator);
+        try testing.expect(!(find(&dimmed) orelse return error.TestUnexpectedResult).typed);
+        var coloured = try testTerminal(allocator, "Try this", .coloured);
+        defer coloured.deinit(allocator);
+        try testing.expect(!(find(&coloured) orelse return error.TestUnexpectedResult).typed);
+    }
+    {
+        // A second row is the user's own, whatever the first looks like.
+        var terminal = try testTerminal(allocator, "one\n  two", .dimmed);
+        defer terminal.deinit(allocator);
+        const box = find(&terminal) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(u16, 2), box.textRows());
+        try testing.expect(box.typed);
+    }
 }
 
 test "classify tells rules and the prompt mark from other rows" {

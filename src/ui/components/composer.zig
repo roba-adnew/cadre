@@ -20,6 +20,10 @@
 // settled. Off never carries over: a new input box always starts with the
 // composer on. A click on the terminal leaves the keyboard in the box.
 //
+// The box would hide anything in Claude's own input, so while that input holds
+// text (a message recalled with the up arrow, something typed or pasted there)
+// the composer steps aside the same way, and comes back once it is empty.
+//
 // Only when no input box has ever been found (a Claude Code release may have
 // redrawn it) is the box docked instead: under the terminal in full view, in a
 // strip of its own on every Claude tile in the grid. There, clicking the
@@ -410,6 +414,15 @@ pub const ComposerComponent = struct {
     fallback_docked: bool = false,
     /// Turned off with the toggle, to type into Claude's own input.
     user_hidden: bool = false,
+    /// Turned on with the toggle over text in Claude's own input.
+    forced_on: bool = false,
+    /// Out of the way of the input box that is up: turned off with the
+    /// toggle, or stepped aside because Claude's own input holds text that the
+    /// box would hide (`PromptBox.typed`).
+    off: bool = false,
+    /// The input box has only just been taken up, so `off` applies at once
+    /// instead of with a slide.
+    spot_fresh: bool = false,
     /// How far the box is slid away (`slideFraction`): 1 once turned off.
     slid: f32 = 0,
     slide: ?Slide = null,
@@ -496,10 +509,7 @@ pub const ComposerComponent = struct {
         if (event.type == c.SDL_EVENT_MOUSE_BUTTON_DOWN or event.type == c.SDL_EVENT_MOUSE_BUTTON_UP) {
             if (self.overToggle(@intFromFloat(event.button.x), @intFromFloat(event.button.y))) {
                 if (event.type == c.SDL_EVENT_MOUSE_BUTTON_DOWN and event.button.button == c.SDL_BUTTON_LEFT) {
-                    self.user_hidden = !self.user_hidden;
-                    const to: f32 = if (self.user_hidden) 1 else 0;
-                    self.slide = if (self.animate) .{ .from = self.slid, .to = to, .start_ms = host.now_ms } else null;
-                    if (!self.animate) self.slid = to;
+                    self.flipToggle();
                     self.first_frame.markTransition();
                     log.info("composer turned {s} with its toggle", .{if (self.user_hidden) "off" else "on"});
                 }
@@ -695,9 +705,9 @@ pub const ComposerComponent = struct {
 
         if (self.visible) {
             if (self.persist_pending and host.now_ms - self.last_edit_ms >= draft_save_delay_ms) self.persistDraft(view, out);
-            if (self.user_hidden and on_prompt) {
-                // Turned off: the keyboard is Claude's at once, while the box
-                // is still sliding away.
+            if (self.off and on_prompt) {
+                // Out of the way: the keyboard is Claude's at once, while the
+                // box is still sliding away.
                 if (self.want_focus) self.focusTerminal(view);
                 self.yielded = false;
             } else {
@@ -757,8 +767,11 @@ pub const ComposerComponent = struct {
             self.fallback_pending = false;
         }
         if (!live) return .none;
-        // Turned off, the box stays up until it has slid away.
-        if (on) |found| return if (self.user_hidden and self.slid >= 1) .none else .{ .on_prompt = found };
+        if (on) |found| {
+            self.setOff(self.user_hidden or (found.spot.typed and !self.forced_on), host.now_ms);
+            // Out of the way, the box stays up until it has slid away.
+            return if (self.off and self.slid >= 1) .none else .{ .on_prompt = found };
+        }
         if (!dock_anyway) return .none; // a dialog has the input box's place
         return if (dockArea(host)) |area| .{ .docked = area } else .none;
     }
@@ -786,9 +799,11 @@ pub const ComposerComponent = struct {
             // starts with the composer showing.
             if (self.spot == null or self.spot_key != key) {
                 self.user_hidden = false;
-                self.slid = 0;
-                self.slide = null;
+                self.forced_on = false;
+                self.spot_fresh = true;
             }
+            // Its input emptied (sent, or cleared): the next text there is new.
+            if (!box.typed) self.forced_on = false;
             self.spot = box;
             self.spot_ms = host.now_ms;
             self.spot_key = key;
@@ -820,6 +835,25 @@ pub const ComposerComponent = struct {
         self.fallback_pending = host.now_ms - since < fallback_delay_ms;
         self.fallback_docked = !self.fallback_pending;
         return self.fallback_docked;
+    }
+
+    /// Put the composer out of the way of the input box, or back. A change on
+    /// an input box already up slides; on one just taken up it applies at once.
+    fn setOff(self: *ComposerComponent, off: bool, now_ms: i64) void {
+        const fresh = self.spot_fresh;
+        self.spot_fresh = false;
+        if (off == self.off and !fresh) return;
+        self.off = off;
+        const to: f32 = if (off) 1 else 0;
+        self.slide = if (self.animate and !fresh) .{ .from = self.slid, .to = to, .start_ms = now_ms } else null;
+        if (self.slide == null) self.slid = to;
+    }
+
+    /// A click on the toggle: on if the composer is out of the way (over
+    /// whatever Claude's own input holds), off if it is up.
+    fn flipToggle(self: *ComposerComponent) void {
+        self.user_hidden = !self.off;
+        self.forced_on = self.off;
     }
 
     fn overToggle(self: *const ComposerComponent, x: c_int, y: c_int) bool {
@@ -1039,8 +1073,8 @@ pub const ComposerComponent = struct {
         const theme = host.theme;
         const hover = host.mouse_has_position and geom.containsPoint(rect, host.mouse_x, host.mouse_y);
         // Off stands out: the keyboard is in Claude's input, not the composer.
-        const color = if (hover) theme.foreground else if (self.user_hidden) theme.accent else theme.chromeTextDim();
-        const key = ToggleKey{ .hidden = self.user_hidden, .hover = hover, .px = self.toggle_px, .color = color };
+        const color = if (hover) theme.foreground else if (self.off) theme.accent else theme.chromeTextDim();
+        const key = ToggleKey{ .hidden = self.off, .hover = hover, .px = self.toggle_px, .color = color };
         const fresh = if (self.toggle_key) |prev| !std.meta.eql(prev, key) else true;
         if (fresh) {
             if (self.toggle_tex) |old| c.SDL_DestroyTexture(old.tex);
@@ -1051,7 +1085,7 @@ pub const ComposerComponent = struct {
                 log.warn("no font for the composer toggle: {}", .{err});
                 return;
             };
-            self.toggle_tex = search_utils.makeTextTexture(self.allocator, renderer, fonts.regular, if (self.user_hidden) toggle_show else toggle_hide, color) catch |err| blk: {
+            self.toggle_tex = search_utils.makeTextTexture(self.allocator, renderer, fonts.regular, if (self.off) toggle_show else toggle_hide, color) catch |err| blk: {
                 log.warn("failed to draw the composer toggle: {}", .{err});
                 break :blk null;
             };
@@ -1078,9 +1112,11 @@ pub const ComposerComponent = struct {
         const fg = host.theme.foreground;
         for (host.sessions, 0..) |info, i| {
             // The focused tile shows the box itself, or Claude's input when it is off.
-            if (i == host.focused_session and (self.visible or self.user_hidden)) continue;
+            if (i == host.focused_session and (self.visible or self.off)) continue;
             if (!info.spawned or info.dead or info.hidden or !info.claude_live) continue;
             const spot = info.prompt_box orelse continue;
+            // Text in Claude's own input stays on show; a preview would cover it.
+            if (spot.typed) continue;
             const text = firstLine(self.drafts.get(info.persist_index) orelse continue);
             if (text.len == 0) continue;
             const surface = surfaceOf(host, i) orelse continue;
@@ -1507,6 +1543,55 @@ test "turning the composer off lasts only for the input box that is up" {
     host.view_mode = .Full;
     try testing.expect(composer.place(&host) == .on_prompt);
     try testing.expectEqual(@as(f32, 0), composer.slid);
+}
+
+test "the composer steps aside while Claude's own input holds text" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true, .persist_index = 4 },
+        .{ .dead = false, .spawned = true, .claude_live = true, .persist_index = 9 },
+    };
+    var host = testHost(&sessions);
+    host.term_cols = 80;
+    host.term_rows = 40;
+    host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
+    const empty = PromptBox{ .top_rule = 30, .first = 31, .last = 31 };
+    const holding = PromptBox{ .top_rule = 28, .first = 29, .last = 31, .typed = true };
+    var composer = ComposerComponent{ .allocator = testing.allocator, .window = undefined, .root = undefined, .view = null, .animate = false };
+
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    // The up arrow recalled a message into Claude's input, or a paste landed
+    // there: the box would hide it, so it gets out of the way.
+    sessions[0].prompt_box = holding;
+    try testing.expect(composer.place(&host) == .none);
+    try testing.expect(composer.off);
+    try testing.expect(composer.toggle_rect != null);
+    // The toggle (reading "show") puts the composer over it anyway, and off again.
+    composer.flipToggle();
+    try testing.expect(composer.place(&host) == .on_prompt);
+    composer.flipToggle();
+    try testing.expect(composer.place(&host) == .none);
+    composer.flipToggle();
+    try testing.expect(composer.place(&host) == .on_prompt);
+    // Sent or cleared: still up, and the next text there moves it aside again.
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    sessions[0].prompt_box = holding;
+    try testing.expect(composer.place(&host) == .none);
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+
+    // A change on the input box that is up slides; a pane focused with text
+    // already in its input starts out of the way, with no slide to sit through.
+    composer.animate = true;
+    sessions[0].prompt_box = holding;
+    try testing.expect(composer.place(&host) == .on_prompt); // still sliding away
+    try testing.expect(composer.slide != null);
+    sessions[1].prompt_box = holding;
+    host.focused_session = 1;
+    try testing.expect(composer.place(&host) == .none);
+    try testing.expect(composer.slide == null);
+    try testing.expectEqual(@as(f32, 1), composer.slid);
 }
 
 test "the box is found by its place among the rows on show, and docks only if never found" {
