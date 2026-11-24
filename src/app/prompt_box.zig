@@ -26,6 +26,8 @@ const prompt_mark: u21 = 0x276F; // ❯
 const scan_rows: usize = 30;
 /// Cells of the input's first row looked at for text of the user's.
 const typed_scan_cols: usize = 24;
+/// Cells of the input's first row read for image tokens.
+const lead_scan_cols: usize = 128;
 
 pub const RowKind = enum { rule, prompt, other };
 
@@ -75,13 +77,54 @@ pub fn find(terminal: *const ghostty_vt.Terminal) ?PromptBox {
     const box = locate(kinds[0..count]) orelse return null;
     const offset: u16 = @intCast(top);
     const first = box.first + offset;
+    const lead = if (box.textRows() == 1) rowImageLead(terminal, first) else 0;
     return .{
         .top_rule = box.top_rule + offset,
         .first = first,
         .last = box.last + offset,
         // A hint is one row; more rows are the user's own lines.
-        .typed = box.textRows() > 1 or rowHasTypedText(terminal, first),
+        .typed = lead == 0 and (box.textRows() > 1 or rowHasTypedText(terminal, first)),
+        .lead = lead,
     };
+}
+
+/// Cells `text` (an input row, right of the prompt mark) gives to Claude's
+/// image tokens, "[Image #1] [Image #2]", when it holds nothing else; else 0.
+pub fn imageLead(text: []const u8) usize {
+    const token = "[Image #";
+    const row = std.mem.trimRight(u8, text, " ");
+    var rest = row;
+    while (true) {
+        if (!std.mem.startsWith(u8, rest, token)) return 0;
+        rest = rest[token.len..];
+        const digits = std.mem.indexOfNone(u8, rest, "0123456789") orelse return 0;
+        if (digits == 0 or rest[digits] != ']') return 0;
+        rest = rest[digits + 1 ..];
+        if (rest.len == 0) return row.len;
+        if (rest[0] != ' ') return 0;
+        rest = rest[1..];
+    }
+}
+
+/// `imageLead` of input row `row`, or 0 when the tokens would leave the
+/// composer less than half the row.
+fn rowImageLead(terminal: *const ghostty_vt.Terminal, row: usize) u16 {
+    const gutter: usize = @intCast(types.prompt_gutter_cols);
+    const cols: usize = terminal.cols;
+    if (cols <= gutter or cellCodepoint(terminal, gutter, row) != '[') return 0;
+    // ponytail: reads `lead_scan_cols` cells; text right of them on a wider
+    // pane goes unseen (it would take a dozen images in front of it).
+    var buf: [lead_scan_cols]u8 = undefined;
+    const len = @min(cols - gutter, buf.len);
+    for (buf[0..len], gutter..) |*byte, col| {
+        byte.* = switch (cellCodepoint(terminal, col, row)) {
+            0, 0xA0 => ' ',
+            1...0x7F => |cp| @intCast(cp),
+            else => '?',
+        };
+    }
+    const lead = imageLead(buf[0..len]);
+    return if (lead * 2 > cols - gutter) 0 else @intCast(lead);
 }
 
 /// Whether input row `row` holds text of the user's: something printable, in
@@ -250,6 +293,38 @@ test "find tells an input holding the user's text from an empty one or a dimmed 
         try testing.expectEqual(@as(u16, 2), box.textRows());
         try testing.expect(box.typed);
     }
+}
+
+test "find tells attached images alone from text of the user's" {
+    const allocator = testing.allocator;
+    {
+        var terminal = try testTerminal(allocator, "[Image #1]", .plain);
+        defer terminal.deinit(allocator);
+        try testing.expectEqual(PromptBox{ .top_rule = 2, .first = 3, .last = 3, .lead = 10 }, find(&terminal).?);
+    }
+    {
+        var terminal = try testTerminal(allocator, "[Image #1] look", .plain);
+        defer terminal.deinit(allocator);
+        try testing.expectEqual(PromptBox{ .top_rule = 2, .first = 3, .last = 3, .typed = true }, find(&terminal).?);
+    }
+    {
+        // Too many for the composer to keep half the row: it steps aside.
+        var terminal = try testTerminal(allocator, "[Image #1] [Image #2]", .plain);
+        defer terminal.deinit(allocator);
+        try testing.expectEqual(PromptBox{ .top_rule = 2, .first = 3, .last = 3, .typed = true }, find(&terminal).?);
+    }
+}
+
+test "imageLead measures a row holding nothing but image tokens" {
+    try testing.expectEqual(@as(usize, 10), imageLead("[Image #1]"));
+    try testing.expectEqual(@as(usize, 10), imageLead("[Image #1]    "));
+    try testing.expectEqual(@as(usize, 22), imageLead("[Image #3] [Image #14]"));
+    try testing.expectEqual(@as(usize, 0), imageLead(""));
+    try testing.expectEqual(@as(usize, 0), imageLead("[Image #1] look at this"));
+    try testing.expectEqual(@as(usize, 0), imageLead("see [Image #1]"));
+    try testing.expectEqual(@as(usize, 0), imageLead("[Image #]"));
+    try testing.expectEqual(@as(usize, 0), imageLead("[Image #1"));
+    try testing.expectEqual(@as(usize, 0), imageLead("[Image #1]  [Image #2]"));
 }
 
 test "classify tells rules and the prompt mark from other rows" {

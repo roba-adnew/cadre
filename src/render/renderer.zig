@@ -384,7 +384,8 @@ pub fn render(
 fn liftPromptRows(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect, lift: ui_types.PromptLift, font: *const font_mod.Font, theme: *const colors.Theme, ui_scale: f32) void {
     const padding = dpi.scale(terminal_padding, ui_scale);
     const cell_h = font.cell_height;
-    const gutter_w = ui_types.prompt_gutter_cols * font.cell_width;
+    // The mark, and any image tokens the box starts right of.
+    const gutter_w = (ui_types.prompt_gutter_cols + @as(c_int, lift.lead)) * font.cell_width;
     const content_w = rect.w - padding * 2;
     const up = lift.px;
     // Texture-local tops of the rule's row and the input's first row.

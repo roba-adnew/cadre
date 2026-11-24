@@ -23,6 +23,9 @@
 // The box would hide anything in Claude's own input, so while that input holds
 // text (a message recalled with the up arrow, something typed or pasted there)
 // the composer steps aside the same way, and comes back once it is empty.
+// Images attached there are the exception: with nothing but Claude's
+// "[Image #1]" tokens in the input, the box starts right of them and the draft
+// stays up (`PromptBox.lead`); Backspace in an empty box takes the last one off.
 //
 // Only when no input box has ever been found (a Claude Code release may have
 // redrawn it) is the box docked instead: under the terminal in full view, in a
@@ -306,10 +309,11 @@ pub fn inlineRows(surface: Surface, spot: PromptBox, content_h: c_int) c_int {
 }
 
 /// The box sitting on Claude's input box: `rows` rows ending on that box's
-/// last row, right of the prompt mark, as wide as the pane's columns.
+/// last row, right of the prompt mark and of any image tokens Claude has put
+/// after it (`PromptBox.lead`), as wide as the pane's columns.
 pub fn inlineRect(surface: Surface, spot: PromptBox, rows: c_int) Rect {
     const font = surface.font;
-    const gutter = types.prompt_gutter_cols * font.cell_w;
+    const gutter = (types.prompt_gutter_cols + @as(c_int, spot.lead)) * font.cell_w;
     return .{
         .x = surface.x + gutter,
         .y = surface.y + (@as(c_int, spot.last) + 1 - rows) * font.cell_h,
@@ -324,7 +328,7 @@ pub fn inlineRect(surface: Surface, spot: PromptBox, rows: c_int) Rect {
 pub fn promptLift(surface: Surface, spot: PromptBox, rect: Rect, session: usize) ?types.PromptLift {
     const px = surface.y + @as(c_int, spot.first) * surface.font.cell_h - rect.y;
     if (px <= 0) return null;
-    return .{ .session = session, .top_rule = spot.top_rule, .first = spot.first, .px = px };
+    return .{ .session = session, .top_rule = spot.top_rule, .first = spot.first, .px = px, .lead = spot.lead };
 }
 
 /// The toggle's place: on the rule under Claude's input box, one cell in from
@@ -477,7 +481,7 @@ pub const ComposerComponent = struct {
     };
 
     const Slide = struct { from: f32, to: f32, start_ms: i64 };
-    const StyleKey = struct { on_prompt: bool, font: types.TermFont, window_h: c_int, font_generation: u64 };
+    const StyleKey = struct { on_prompt: bool, padded: bool, font: types.TermFont, window_h: c_int, font_generation: u64 };
     const ToggleKey = struct { hidden: bool, hover: bool, px: c_int, color: c.SDL_Color };
 
     const vtable = UiComponent.VTable{
@@ -509,6 +513,9 @@ pub const ComposerComponent = struct {
                 if (!view.isFocused()) return false;
                 const key = event.key.key;
                 const mod = event.key.mod;
+                // Nothing in the box to delete: Backspace takes off the last
+                // image attached in Claude's input, left of the box.
+                if (key == c.SDLK_BACKSPACE and view.textLength() == 0 and self.imagesAttached()) return false;
                 switch (routeKeyDown(key, mod, view.textLength() > 0, view.hasMarkedText())) {
                     .terminal => return false,
                     .submit => return self.submit(host, out),
@@ -591,10 +598,18 @@ pub const ComposerComponent = struct {
             return true;
         };
         defer self.allocator.free(raw);
-        const text = (normalizeSubmitText(self.allocator, raw) catch |err| {
+        const body = (normalizeSubmitText(self.allocator, raw) catch |err| {
             log.warn("failed to prepare composer text: {}", .{err});
             return true;
         }) orelse return false; // whitespace only: plain Enter for the terminal
+        // Claude sets a paste right against its image tokens: space them apart.
+        const text = if (self.imagesAttached()) blk: {
+            defer self.allocator.free(body);
+            break :blk std.mem.concat(self.allocator, u8, &.{ " ", body }) catch |err| {
+                log.warn("failed to prepare composer text: {}", .{err});
+                return true;
+            };
+        } else body;
         log.info("composer submit: {d} bytes to session {d}", .{ text.len, host.focused_session });
         out.append(.{ .ComposerSubmit = .{ .session = host.focused_session, .text = text } }) catch |err| {
             log.warn("failed to queue composer submit: {}", .{err});
@@ -841,6 +856,11 @@ pub const ComposerComponent = struct {
         self.forced_on = self.off;
     }
 
+    /// Claude's own input holds image tokens, on show left of the box.
+    fn imagesAttached(self: *const ComposerComponent) bool {
+        return self.inline_mode and (self.spot orelse return false).lead > 0;
+    }
+
     fn overToggle(self: *const ComposerComponent, x: c_int, y: c_int) bool {
         const rect = self.toggle_rect orelse return false;
         return geom.containsPoint(rect, x, y);
@@ -856,8 +876,12 @@ pub const ComposerComponent = struct {
     fn applyStyle(self: *ComposerComponent, view: *ComposerView, host: *const types.UiHost, placement: Placement) void {
         const cache = self.root.assets.font_cache;
         const font: ?types.TermFont = if (placement == .on_prompt) placement.on_prompt.surface.font else null;
+        // Right of Claude's image tokens the box starts on the cell after
+        // them (covering Claude's cursor), so its text keeps a cell's distance.
+        const padded = placement == .on_prompt and placement.on_prompt.spot.lead > 0;
         const key = StyleKey{
             .on_prompt = font != null,
+            .padded = padded,
             .font = font orelse .{},
             .window_h = if (font != null) host.window_h else 0,
             .font_generation = if (cache) |fonts| fonts.generation else 0,
@@ -873,6 +897,7 @@ pub const ComposerComponent = struct {
             .cell_h = f.cell_h,
             .ascent = f.ascent,
             .render_h = host.window_h,
+            .side_pad_px = if (padded) f.cell_w else 0,
         } } else .{ .docked = .{ .font_pt = font_pt } });
     }
 
@@ -1092,7 +1117,9 @@ pub const ComposerComponent = struct {
             if (text.len == 0) continue;
             const surface = surfaceOf(host, i) orelse continue;
             if (@as(c_int, spot.last) + 1 >= surface.rows) continue;
-            const row = inlineRect(surface, .{ .top_rule = spot.top_rule, .first = spot.first, .last = spot.first }, 1);
+            const row = inlineRect(surface, .{ .top_rule = spot.top_rule, .first = spot.first, .last = spot.first, .lead = spot.lead }, 1);
+            // A cell clear of Claude's image tokens, as the box sets its text.
+            const text_x = row.x + if (spot.lead > 0) surface.font.cell_w else 0;
             const fonts = cache.get(surface.font.px) catch |err| {
                 log.warn("no font for a tile's draft preview: {}", .{err});
                 continue;
@@ -1110,7 +1137,7 @@ pub const ComposerComponent = struct {
             const clip = c.SDL_Rect{ .x = row.x, .y = row.y, .w = row.w, .h = row.h };
             _ = c.SDL_SetRenderClipRect(renderer, &clip);
             _ = c.SDL_RenderTexture(renderer, texture, null, &c.SDL_FRect{
-                .x = @floatFromInt(row.x),
+                .x = @floatFromInt(text_x),
                 .y = @as(f32, @floatFromInt(row.y)) + (@as(f32, @floatFromInt(row.h)) - h) / 2,
                 .w = w,
                 .h = h,
@@ -1376,6 +1403,12 @@ test "on Claude's input box: the box covers its text rows and grows upward" {
     try testing.expectEqual(@as(c_int, pad + 29 * 20), inlineRect(pane, grown, 3).y);
     try testing.expect(promptLift(pane, grown, inlineRect(pane, grown, 3), 0) == null);
     try testing.expectEqual(@as(c_int, 20), promptLift(pane, grown, inlineRect(pane, grown, 4), 0).?.px);
+
+    // An image attached in Claude's input: the box starts right of its token,
+    // which moves up with the mark under a taller box.
+    const attached = PromptBox{ .top_rule = 30, .first = 31, .last = 31, .lead = 10 };
+    try testing.expectEqual(Rect{ .x = pad + 12 * 10, .y = pad + 31 * 20, .w = 68 * 10, .h = 20 }, inlineRect(pane, attached, 1));
+    try testing.expectEqual(@as(u16, 10), promptLift(pane, attached, inlineRect(pane, attached, 3), 0).?.lead);
 }
 
 test "on a grid tile the box sits on that tile's rows, in the grid font" {
@@ -1545,6 +1578,12 @@ test "the composer steps aside while Claude's own input holds text" {
     try testing.expect(composer.place(&host) == .on_prompt);
     sessions[0].prompt_box = holding;
     try testing.expect(composer.place(&host) == .none);
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    // Images attached there and nothing else: the box stays, right of them.
+    sessions[0].prompt_box = .{ .top_rule = 30, .first = 31, .last = 31, .lead = 10 };
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(!composer.off);
     sessions[0].prompt_box = empty;
     try testing.expect(composer.place(&host) == .on_prompt);
 

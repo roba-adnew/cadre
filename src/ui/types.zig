@@ -83,6 +83,10 @@ pub const PromptBox = struct {
     /// recalled with the up arrow), as against being empty or showing a
     /// dimmed hint.
     typed: bool = false,
+    /// Cells Claude's image tokens ("[Image #1] [Image #2]") take at the start
+    /// of the input when it holds nothing else. Not `typed`: the composer's box
+    /// starts right of them, so they stay on show.
+    lead: u16 = 0,
 
     pub fn textRows(self: PromptBox) u16 {
         return self.last - self.first + 1;
@@ -102,6 +106,8 @@ pub const PromptLift = struct {
     top_rule: u16,
     first: u16,
     px: c_int,
+    /// `PromptBox.lead`: cells right of the mark that move up with it.
+    lead: u16 = 0,
 };
 
 /// A font terminals are drawn in, in render pixels.

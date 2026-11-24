@@ -112,6 +112,8 @@ pub const Style = union(enum) {
         /// Baseline, measured down from the top of a cell.
         ascent: c_int,
         render_h: c_int,
+        /// Blank kept left and right of the text.
+        side_pad_px: c_int = 0,
     },
 };
 
@@ -246,7 +248,7 @@ const AppKitView = struct {
                 setLineMetrics(self.text, fl(term.cell_h) * per_px, fl(term.ascent) * per_px);
                 if (terminalFont(term.font_name, fl(term.font_px) * per_px)) |font| send(void, self.text, "setFont:", .{font});
                 send(void, self.text, "setTextContainerInset:", .{ @as(f64, 0), @as(f64, 0) });
-                send(void, container, "setLineFragmentPadding:", .{@as(f64, 0)});
+                send(void, container, "setLineFragmentPadding:", .{fl(term.side_pad_px) * per_px});
                 self.inset_h = 0;
             },
         }
