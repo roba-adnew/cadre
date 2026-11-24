@@ -259,6 +259,7 @@ Notes:
 
 - macOS on Apple silicon only. The shortcut is fixed; it is the one Claude Desktop uses for its own quick entry, so turn that off there (Claude Desktop's settings) or both apps will answer.
 - Cadre listens for modifier-key changes only. At launch, `~/Library/Logs/Cadre/cadre.log` records `quick entry shortcut installed` together with whether Cadre holds the Accessibility permission, and it records `quick entry shortcut fired` on each double tap. If the shortcut is installed but never fires and the permission is not granted, grant it under System Settings → Privacy & Security → Accessibility and relaunch.
+- The agent is named `rando` (`claude --name rando`), or `rando-1`, `rando-2`, … when the agent in one of Cadre's terminals already has that name. The name shows in the terminal's title, in the hidden-terminals switcher and in Claude's `/resume` list.
 - A folder Claude has not been run in before first asks whether you trust it; your text is sent once you have answered and Claude's input box is up.
 - Changes take effect on the next launch.
 

@@ -1179,8 +1179,35 @@ const QuickEntry = struct {
     box_since_ms: ?i64 = null,
 };
 
-/// What the quick entry's terminal runs once its shell is up.
+/// What the quick entry's terminal runs once its shell is up, followed by
+/// `--name` and the agent's name.
 const quick_entry_command = "claude";
+/// What a quick entry's agent is called (the session name Claude shows in its
+/// title, so the name on the terminal too). See `freeAgentName`.
+const quick_entry_agent_name = "rando";
+
+/// A name for a new agent: `base`, or `base` with a number after it
+/// (`base-1`, `base-2`, ...) when a terminal's agent already goes by it.
+/// Case aside, as the hidden-terminals switcher sorts names.
+fn freeAgentName(buf: []u8, base: []const u8, sessions: []const *SessionState) []const u8 {
+    var n: usize = 0;
+    while (true) : (n += 1) {
+        const name = if (n == 0) base else std.fmt.bufPrint(buf, "{s}-{d}", .{ base, n }) catch |err| {
+            log.warn("agent name {s}-{d} doesn't fit: {}", .{ base, n, err });
+            return base;
+        };
+        if (!agentNameTaken(sessions, name)) return name;
+    }
+}
+
+fn agentNameTaken(sessions: []const *SessionState, name: []const u8) bool {
+    for (sessions) |session| {
+        if (!session.spawned) continue;
+        const title = session.title orelse continue;
+        if (std.ascii.eqlIgnoreCase(title, name)) return true;
+    }
+    return false;
+}
 /// Claude's input box has to stay on screen this long before text is pasted
 /// into it: its first paint can come in pieces. By-eye knob.
 const quick_entry_settle_ms: i64 = 150;
@@ -2578,7 +2605,10 @@ const Window = struct {
 
         // Run by the shell's rc once it has loaded, like a restored terminal's
         // resume command: never typed into the PTY, so nothing can eat it.
-        const command = allocator.dupe(u8, quick_entry_command) catch |err| {
+        // Named apart from every agent in any window (the pool holds them all).
+        var name_buf: [32]u8 = undefined;
+        const agent_name = freeAgentName(&name_buf, quick_entry_agent_name, app.pool.items);
+        const command = std.fmt.allocPrint(allocator, quick_entry_command ++ " --name {s}", .{agent_name}) catch |err| {
             log.warn("quick entry: failed to allocate command: {}", .{err});
             return;
         };
@@ -2611,7 +2641,7 @@ const Window = struct {
             return;
         };
         self.quick = .{ .session_id = session.id };
-        log.info("quick entry: starting {s} in {s} (session {d})", .{ quick_entry_command, dir, session.id });
+        log.info("quick entry: starting {s} as {s} in {s} (session {d})", .{ quick_entry_command, agent_name, dir, session.id });
         compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
     }
 
@@ -5587,6 +5617,32 @@ fn testSession(s: *SessionState, id: usize, order_seq: u64, spawned: bool, hidde
     s.id = id;
     s.order_seq = order_seq;
     s.persist_index = id;
+}
+
+test "freeAgentName numbers a name another terminal's agent already has" {
+    var a: SessionState = undefined;
+    var b: SessionState = undefined;
+    var closed: SessionState = undefined;
+    testSession(&a, 1, 1, true, false);
+    testSession(&b, 2, 2, true, true); // hidden terminals count too
+    testSession(&closed, 3, 0, false, false);
+    a.title = null;
+    b.title = null;
+    // A closed terminal's slot, whatever name is left in it.
+    closed.title = "rando";
+    const sessions = [_]*SessionState{ &a, &b, &closed };
+    var buf: [32]u8 = undefined;
+
+    try std.testing.expectEqualStrings("rando", freeAgentName(&buf, "rando", &sessions));
+    a.title = "kimoyo-dev";
+    try std.testing.expectEqualStrings("rando", freeAgentName(&buf, "rando", &sessions));
+    a.title = "Rando";
+    try std.testing.expectEqualStrings("rando-1", freeAgentName(&buf, "rando", &sessions));
+    b.title = "rando-1";
+    try std.testing.expectEqualStrings("rando-2", freeAgentName(&buf, "rando", &sessions));
+    // The plain name is free again once its agent is gone.
+    a.title = "something else";
+    try std.testing.expectEqualStrings("rando", freeAgentName(&buf, "rando", &sessions));
 }
 
 test "transferSlot swaps the slot pointers and re-homes the moved session" {

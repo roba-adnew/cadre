@@ -356,7 +356,8 @@ runtime main loop: hotkey.take() -> App.openQuickEntry -> Window.openQuickEntry
     | quick_panel.show(): a non-activating NSPanel near the bottom of the
     |   screen the pointer is on, the keyboard in its NSTextView, the app
     |   underneath still the active one
-    | last free slot: resume_cmd = "claude", hidden = true,
+    | last free slot: resume_cmd = "claude --name rando" (freeAgentName:
+    |   "rando-1", ... when a terminal's agent has the name), hidden = true,
     |   ensureSpawnedFresh([quick_entry] directory), compactSessions
     |   (parked off-grid like a Cmd+J terminal: no tile moves, no PTY resizes)
     | Window.quick = { session id }
