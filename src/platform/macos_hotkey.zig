@@ -1,15 +1,14 @@
 // The quick entry shortcut: a double tap of Option, from any app.
 //
 // Two NSEvent monitors for modifier changes feed one detector: the global one
-// while another app is in front, the local one while Cadre is. Modifier
-// changes are the one kind of key event macOS hands to a global monitor
-// without the Accessibility permission. The monitors' handlers are blocks,
-// built here by hand as static "global" blocks (they capture nothing), since
-// the build has no Objective-C sources. Same runtime objc_msgSend interop as
-// ui/components/composer_view.zig, and arm64 only like it.
+// while another app has the keyboard, the local one while Cadre does (or its
+// quick entry panel, macos_quick_panel.zig). The monitors' handlers are
+// blocks, built here by hand as static "global" blocks (they capture
+// nothing), since the build has no Objective-C sources. arm64 only, like
+// ui/components/composer_view.zig.
 //
-// Also the app switching that goes with the shortcut: bringing Cadre in front
-// of whatever app the user was in, and handing the keyboard back to that app.
+// Also bringing Cadre in front of whatever app the user is in, for when a
+// quick entry is sent.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -86,21 +85,10 @@ pub fn take() bool {
     return Impl.take();
 }
 
-/// The app in front when that isn't Cadre, kept (retained) to hand to
-/// `release` later.
-pub fn frontApp() ?*anyopaque {
-    return Impl.frontApp();
-}
-
 /// Bring Cadre, and `window`, in front of whatever app has the screen: out of
 /// hiding (Cmd+H) and out of the Dock (minimized) too.
 pub fn bringForward(window: *c_sdl.SDL_Window) void {
     Impl.bringForward(window);
-}
-
-/// Let go of an app from `frontApp`; with `activate`, put it back in front first.
-pub fn release(app: *anyopaque, activate: bool) void {
-    Impl.release(app, activate);
 }
 
 const None = struct {
@@ -108,18 +96,14 @@ const None = struct {
     fn take() bool {
         return false;
     }
-    fn frontApp() ?*anyopaque {
-        return null;
-    }
     fn bringForward(_: *c_sdl.SDL_Window) void {}
-    fn release(_: *anyopaque, _: bool) void {}
 };
 
 const AppKit = struct {
-    const objc = @cImport({
-        @cInclude("objc/runtime.h");
-        @cInclude("objc/message.h");
-    });
+    const objc = @import("objc.zig");
+    const Id = objc.Id;
+    const send = objc.send;
+    const cls = objc.cls;
 
     /// Seconds since the last event of a type, system-wide. Tells that a key
     /// went down without the permission it takes to see which.
@@ -128,8 +112,6 @@ const AppKit = struct {
     const cg_key_down: u32 = 10; // kCGEventKeyDown
     /// Whether the user has granted this app the Accessibility permission.
     extern "c" fn AXIsProcessTrusted() u8;
-
-    const Id = ?*anyopaque;
 
     const ns_flags_changed_mask: u64 = 1 << 12; // NSEventMaskFlagsChanged
     const flag_shift: usize = 1 << 17;
@@ -203,14 +185,9 @@ const AppKit = struct {
         if (wake) |w| w.callback(w.context);
     }
 
-    fn frontApp() ?*anyopaque {
-        if (send(bool, sharedApp(), "isActive", .{})) return null;
-        const workspace = send(Id, cls("NSWorkspace"), "sharedWorkspace", .{});
-        const front = send(Id, workspace, "frontmostApplication", .{}) orelse return null;
-        return send(Id, front, "retain", .{});
-    }
-
     fn bringForward(window: *c_sdl.SDL_Window) void {
+        const pool = objc.Pool.push();
+        defer pool.pop();
         const props = c_sdl.SDL_GetWindowProperties(window);
         const ns_window: Id = c_sdl.SDL_GetPointerProperty(props, c_sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null) orelse return;
         const app = sharedApp();
@@ -220,51 +197,8 @@ const AppKit = struct {
         send(void, ns_window, "makeKeyAndOrderFront:", .{@as(Id, null)});
     }
 
-    fn release(app: *anyopaque, activate: bool) void {
-        const other: Id = app;
-        if (activate) {
-            // macOS 14 on: the app in front has to offer its place before
-            // another app's activation is honoured.
-            const yield = objc.sel_registerName("yieldActivationToApplication:");
-            if (send(bool, sharedApp(), "respondsToSelector:", .{yield})) send(void, sharedApp(), "yieldActivationToApplication:", .{other});
-            if (!send(bool, other, "activateWithOptions:", .{@as(usize, 0)})) log.warn("could not hand the keyboard back to the app that had it", .{});
-        }
-        send(void, other, "release", .{});
-    }
-
     fn sharedApp() Id {
         return send(Id, cls("NSApplication"), "sharedApplication", .{});
-    }
-
-    fn cls(name: [*:0]const u8) Id {
-        return @ptrCast(objc.objc_getClass(name));
-    }
-
-    /// Typed objc_msgSend (see composer_view.zig): args must be runtime-typed.
-    fn send(comptime R: type, target: Id, comptime selector: [*:0]const u8, args: anytype) R {
-        const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
-        const arg_types = comptime blk: {
-            var types: [fields.len]type = undefined;
-            for (fields, 0..) |field, i| types[i] = field.type;
-            break :blk types;
-        };
-        const func: *const msgFnType(R, &arg_types) = @ptrCast(&objc.objc_msgSend);
-        const sel: Id = @ptrCast(objc.sel_registerName(selector));
-        return @call(.auto, func, .{ target, sel } ++ args);
-    }
-
-    fn msgFnType(comptime R: type, comptime args: []const type) type {
-        var params: [args.len + 2]std.builtin.Type.Fn.Param = undefined;
-        params[0] = .{ .is_generic = false, .is_noalias = false, .type = Id };
-        params[1] = .{ .is_generic = false, .is_noalias = false, .type = Id };
-        for (args, 0..) |arg_type, i| params[i + 2] = .{ .is_generic = false, .is_noalias = false, .type = arg_type };
-        return @Type(.{ .@"fn" = .{
-            .calling_convention = .c,
-            .is_generic = false,
-            .is_var_args = false,
-            .return_type = R,
-            .params = &params,
-        } });
     }
 };
 

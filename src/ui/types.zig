@@ -223,16 +223,6 @@ pub const UiAction = union(enum) {
     SetComposerHeight: c_int,
     /// Store a terminal's unsent draft so it survives a Cadre restart.
     SaveComposerDraft: ComposerDraftAction,
-    /// The quick entry box's Enter: this text is for the Claude booting in the
-    /// terminal started when the box opened.
-    QuickEntrySubmit: QuickEntrySubmitAction,
-    /// Esc in the quick entry box: drop it, and the terminal started for it.
-    QuickEntryCancel: void,
-};
-
-pub const QuickEntrySubmitAction = struct {
-    /// Heap-allocated; ownership transfers to runtime, which frees after send.
-    text: []const u8,
 };
 
 /// Persist a terminal's unsent composer draft (empty clears it).

@@ -29,4 +29,3 @@ pub const reader_overlay = @import("components/reader_overlay.zig");
 pub const find_bar = @import("components/find_bar.zig");
 pub const context_menu = @import("components/context_menu.zig");
 pub const composer = @import("components/composer.zig");
-pub const quick_entry = @import("components/quick_entry.zig");

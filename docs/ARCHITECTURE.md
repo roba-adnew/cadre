@@ -343,35 +343,49 @@ On when `[quick_entry] directory` is set (macOS, Apple silicon).
 
 ```
 Option, pressed twice, in any app
-    | NSEvent flagsChanged: the global monitor while another app is in front,
-    | the local monitor while Cadre is (both on the main thread)
+    | NSEvent flagsChanged: the global monitor while another app has the
+    | keyboard, the local monitor while Cadre or its panel does (main thread)
     v
 platform/macos_hotkey.zig: DoubleTap.feed
     | two presses of Option alone, each short, close together, and no other
     | key down since the first (CGEventSourceSecondsSinceLastEventType)
     | -> pending flag + SDL wake event
     v
-runtime main loop: hotkey.take() -> App.openQuickEntry
-    | hotkey.frontApp()      the app in front, kept for Esc (null when Cadre)
-    | hotkey.bringForward()  unhide, activate, key window: the last-used one
-    v
-Window.openQuickEntry
-    | QuickEntryComponent.show(): scrim, card, the composer's NSTextView in it
+runtime main loop: hotkey.take() -> App.openQuickEntry -> Window.openQuickEntry
+    | (the window last used; Cadre is NOT brought forward)
+    | quick_panel.show(): a non-activating NSPanel near the bottom of the
+    |   screen the pointer is on, the keyboard in its NSTextView, the app
+    |   underneath still the active one
     | last free slot: resume_cmd = "claude", hidden = true,
     |   ensureSpawnedFresh([quick_entry] directory), compactSessions
     |   (parked off-grid like a Cmd+J terminal: no tile moves, no PTY resizes)
-    | Window.quick = { session id, prev_app }
+    | Window.quick = { session id }
     v
 Window.tickQuickEntry (each frame while Window.quick is set)
     | prompt_box.onScreen(that terminal) held for quick_entry_settle_ms
-    |   -> QuickEntryComponent.setReady (the caption under the box)
+    |   -> quick_panel.setReady (the caption in the panel)
     v
-Enter -> UiAction.QuickEntrySubmit             Esc -> UiAction.QuickEntryCancel
+Return / Esc in the panel (the text view's delegate: orderOut, pending event,
+    | SDL wake event) -> main loop: quick_panel.take() -> App.handleQuickPanel
+    v
+submit: Window.submitQuickEntry                cancel: Window.cancelQuickEntry
     | revealInGrid + showFull (a cut, no zoom)     | closeQuickEntryTerminal: despawn,
-    | text kept in Window.quick until ready,       |   hidden = false, compactSessions
-    |   then terminal_actions.pasteText + Return   | hotkey.release(prev_app, activate):
-    |   (the composer's Enter)                     |   back to the app the user was in
+    | hotkey.bringForward (unhide, activate)       |   hidden = false, compactSessions
+    | text kept in Window.quick until ready,       | (the app underneath never lost its
+    |   then terminal_actions.pasteText + Return   |  place: nothing to hand back)
+    |   (the composer's Enter)
 ```
+
+The panel is the one piece of UI outside every window's `UiRoot`: it is a
+native window of its own, not part of any SDL window, so there is no host to
+route it through. It reaches the app the way the control socket does, through
+an event the frame loop polls (`quick_panel.take`). What is typed in it never
+reaches a terminal: while a window SDL doesn't know has the keyboard, SDL's
+key events carry window id 0 and `App.dispatchEvent` drops them, and
+`quick_panel.swallowsKey` also drops every keyboard event while the panel is
+up, plus the key-up of the Esc that closed it (SDL can report that one against
+the Cadre window that got the keyboard back, and the runtime sends a bare Esc
+key-up to the shell).
 
 The terminal is closed directly rather than through `despawnSessionAtIndex`: it
 was never one of the user's, so there is nothing for Cmd+Shift+T to reopen and
@@ -567,7 +581,9 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 | `app/terminal_history.zig` | Extract focused terminal scrollback + viewport text, strip ANSI escape sequences, convert OSC 133 prompt markers into reader-friendly prompt marker lines, and extract agent session IDs from PTY output for resumption | `extractSessionText()`, `extractTerminalText()`, `stripAnsiAlloc()`, `extractAgentSessionId()`, `buildResumeCommand()` | `session/state`, `ghostty-vt`, std |
 | `app/*` (app_state, layout, ui_host, grid_nav, grid_layout, input_keys, input_text, terminal_actions, worktree) | Application logic decomposed by concern: state enums, grid sizing, UI snapshot building, navigation, input encoding, clipboard, worktree commands (with configurable external directory and post-create init) | `ViewMode`, `AnimationState`, `SessionStatus`, `buildUiHost()`, `applyTerminalResize()`, `encodeKey()`, `paste()`, `clear()`, `resolveWorktreeDir()` | `geom`, `anim/easing`, `ui/types`, `ui/session_view_state`, `colors`, `input/mapper`, `session/state`, `c` |
 | `platform/sdl.zig` | SDL3 process init (`PlatformCore`: hints, SDL/TTF init, wake event) and per-window SDL window + Metal renderer + HiDPI sizes (`PlatformWindow`) | `initCore()`, `initWindow()`, `deinitWindow()`, `deinitCore()`, wake event helpers | `c` |
-| `platform/macos_hotkey.zig` | The quick entry shortcut: global and local NSEvent `flagsChanged` monitors (their handler blocks built by hand as static global blocks) feeding `DoubleTap`, which fires on two quick presses of Option alone; and the app switching around it (the app in front before, bringing Cadre forward, handing the keyboard back). arm64 macOS only; elsewhere every call is a no-op | `install()`, `take()`, `DoubleTap`, `frontApp()`, `bringForward()`, `release()` | `c`, AppKit (objc runtime), CoreGraphics |
+| `platform/objc.zig` | Objective-C runtime interop shared by the AppKit glue in `platform/`: class lookup, autoreleased strings, a typed `objc_msgSend`, autorelease pools for calls made from the frame loop | `send()`, `cls()`, `alloc()`, `string()`, `Pool`, `runtime` | objc runtime |
+| `platform/macos_hotkey.zig` | The quick entry shortcut: global and local NSEvent `flagsChanged` monitors (their handler blocks built by hand as static global blocks) feeding `DoubleTap`, which fires on two quick presses of Option alone; and bringing Cadre in front of whatever app the user is in. arm64 macOS only; elsewhere every call is a no-op | `install()`, `take()`, `DoubleTap`, `bringForward()`, `Wake` | `platform/objc`, `c`, AppKit, CoreGraphics |
+| `platform/macos_quick_panel.zig` | Quick entry's box: one floating, non-activating NSPanel (a subclass built at runtime so that a borderless panel may have the keyboard, and so that Cmd keys mean an edit or nothing), placed by `panelFrame` near the bottom of the pointer's screen and growing upward with its text; in it an NSTextView and a caption row. The text view's delegate maps editing commands with `command` (Return sends, a modified Return breaks the line, Esc cancels) and reports through a pending event the frame loop polls. `swallowsKey` tells the runtime which SDL keyboard events are the panel's. arm64 macOS only; elsewhere `show` returns false | `install()`, `show()`, `hide()`, `isOpen()`, `focus()`, `setReady()`, `take()`, `swallowsKey()`, `panelFrame()`, `command()`, `keyEquivalent()` | `platform/objc`, `platform/macos_hotkey` (`Wake`), AppKit |
 | `platform/macos_titlebar.zig` | Tint the native macOS title bar to the theme background and place the app name at its right via NSWindow (objc_msgSend) | `style()` | `c`, AppKit |
 | `input/mapper.zig` | SDL keycodes to VT escape sequences, shortcut detection | `encodeKey()`, modifier helpers | `c` |
 | `c.zig` | C FFI re-exports (SDL3, SDL3_ttf constants) | `SDLK_*`, `SDL_*`, `TTF_*` re-exports | SDL3 system libs (via `@cImport`) |
@@ -587,7 +603,6 @@ Rotate: rename active file to cadre-<UTC timestamp>.log and continue in new acti
 | `ui/components/context_menu.zig` | Right-click context menu: Paste plus the window/terminal shortcuts; items other than Paste are executed by pushing the equivalent Cmd key event (tagged with the window id) back into SDL so the existing handlers run | `ContextMenuComponent`, `Layout`, `clampOrigin()`, `keyEventFor()` | `ui/types`, `gfx/primitives`, `font_cache`, `dpi`, `geom`, `c` |
 | `ui/components/composer.zig` | Composer: a native text box for the focused pane while Claude runs there (`SessionUiInfo.claude_live`). In full view and on the focused grid tile it sits on Claude's own input box (`SessionUiInfo.prompt_box`, held through `spot_grace_ms` so a redraw in progress doesn't drop it): `surfaceOf` gives the pane's rows as the renderer lays them out (the window, or the tile in the grid font), `inlineRect`/`inlineRows` cover that box's text rows right of the prompt mark and grow upward with the draft, `promptLift` tells the renderer how far (read by the runtime through `promptLiftNow`), and the PTY gives up nothing. A toggle drawn on the rule under the input box (`toggleRect`) turns the composer off and on (`user_hidden`), sliding the box off the bottom of its pane (the window, or its tile, where it is cut off) and back over `slide_ms` (`slideFraction`, `slidRect`, tinted by `slideBackground`; the lift is in pixels so the rule and mark follow the slide); off lasts only for the input box it was set on (`trackSpot` turns it back on for another pane's box, or the same pane's after a dialog or a change of view), and the composer also steps aside by itself (`off`, `setOff`) while Claude's own input holds text the box would hide (`PromptBox.typed`), until the toggle forces it on or that input empties (image tokens alone, `[Image #1]`, are not such text: `PromptBox.lead` counts their cells, `inlineRect` starts the box right of them, `promptLift` carries them up with the mark, and Backspace in an empty box goes to Claude to take the last one off; and for `paste_settle_ms` after ⌘V sends an image, `steady` keeps the box at its rows while Claude folds its status lines into one "Pasting…" row and its input box drops and comes back, with `PromptBox.drop`/`PromptLift.drop` telling `renderer.liftPromptRows` to draw the rows under the input that much higher); there a click on the terminal leaves the keyboard in the box. Unfocused tiles' drafts are drawn on their own prompt rows (`drawInlinePreviews`). With no input box on screen the composer hides, except that a run which has never found one docks the box after `fallback_delay_ms` (`fallbackDock`). Only as that fallback is the box docked: at the bottom of the window (the PTY gives up those rows) or of the focused tile (`dockArea`). Docked, every Claude tile has a box row (`tileBoxPx`: the live box's height on the focused tile, one line elsewhere, so moving focus between tiles never resizes a terminal). Its PTY gives up the row plus a small gap above it (`gridReservePx` → `layout.reservedGridSize`, which spends the spare pixels under the last row before whole rows; refreshed by `Window.refreshGridReserves` only when a reserve changes). The row sits that gap under the terminal's last row (`placeBox`/`tileBoxRect`, measured from `SessionUiInfo.term_h_px`). Routes keys between the box and the terminal (`routeKeyDown`), arbitrates keyboard focus between the AppKit text view and SDL text input (yielding to Claude's approval prompts via `SessionUiInfo.approval_pending`, which focusing the pane doesn't clear, and to overlays that type into their own field via `UiHost.text_entry_open`), hides whenever a higher UI component covers it (`UiRoot.hitTestAbove`), keeps per-terminal drafts by `persist_index` (persisted on the terminal's tmux session as a base64 user option via `UiAction.SaveComposerDraft` → `tmux.setComposerDraft`, one second after the last edit and on every hide/switch/send, and seeded back at window creation by `Window.restoreComposerDraft`), and emits `ComposerSubmit` (bracketed paste + Return) and `SetComposerHeight` (the focused PTY is sized to the rows above it) | `ComposerComponent`, `routeKeyDown()`, `shouldShow()`, `composerRect()`, `surfaceOf()`, `inlineRect()`, `inlineRows()`, `promptLift()`, `toggleRect()`, `normalizeSubmitText()` | `ui/components/composer_view`, `ui/components/search_utils`, `ui/root`, `ui/types`, `ui/first_frame_guard`, `dpi`, `geom`, `c` |
 | `ui/components/composer_view.zig` | The composer's AppKit side: an NSTextView in an NSScrollView added over the SDL view through the objc runtime (typed `objc_msgSend` shim, delegate class built at runtime) — plain text, no smart substitutions, spellcheck on. The delegate vetoes editing commands for keys routed to the terminal (`commandAction`) and stops SDL text input the instant the box is clicked (AppKit delivers that click to the text view, never to SDL). `setStyle` switches between the docked look (system font, padded) and the terminal look (the terminal's font by the font file's name, no padding, and, as the layout manager's delegate, every line exactly one cell tall with the terminal's baseline). arm64 macOS only; elsewhere `create` returns null | `ComposerView`, `commandAction()`, `Edit`, `Style` | `geom`, `c`, AppKit (objc runtime) |
-| `ui/components/quick_entry.zig` | Quick entry's box: a modal card in the middle of the window (scrim, rounded card, a caption saying where Claude is starting and whether it is up) around a second `ComposerView`, made on first use and kept focused while open. `keyAction` maps keys (Enter sends, a modified Enter is a new line, Esc cancels, the Cmd editing keys are performed on the text view); every other key and mouse event is swallowed while it is up, and the Esc key-up after a cancel too, so it never reaches the terminal underneath. Emits `QuickEntrySubmit` / `QuickEntryCancel`; the runtime owns the terminal and the waiting text (`Window.quick`) | `QuickEntryComponent`, `show()`, `close()`, `setReady()`, `keyAction()`, `cardRect()`, `fieldRect()` | `ui/components/composer_view`, `ui/components/composer` (`normalizeSubmitText`), `ui/components/search_utils`, `ui/first_frame_guard`, `gfx/primitives`, `dpi`, `geom`, `c` |
 | `ui/first_frame_guard.zig` | Idle throttle bypass for visible state transitions | `FirstFrameGuard`, `markTransition()`, `markDrawn()`, `wantsFrame()` | (none) |
 | `ui/components/markdown_parser.zig` | Shared markdown parser for reader mode and story overlays. Parses headings, paragraphs, lists (including task checkboxes), blockquotes, markdown tables, fenced code, horizontal rules, inline styles (bold/italic/code/strikethrough/link), and prompt separator blocks. In story mode (`parseStory()`), additionally handles `story-diff` fenced blocks, code block metadata JSON, anchor extraction (`**[N]**` in prose, `<!--ref:N-->` in code), and per-line paragraph emission. | `parse()`, `parseStory()`, `freeBlocks()`, `DisplayBlock`, `StyledSpan`, `CodeBlockMeta`, `CodeLineKind`, `ParseOptions` | std |
 | `ui/components/markdown_renderer.zig` | Line layout engine that wraps parsed markdown blocks into renderable lines and style runs, including prompt-separator and story-specific line kinds (diff headers, diff lines, code lines with anchor/kind metadata) | `buildLines()`, `freeLines()`, `RenderLine`, `RenderRun` | `ui/components/markdown_parser` |

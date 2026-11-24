@@ -253,7 +253,7 @@ directory = "~/code/my-project"  # Folder Claude starts in
 |---------|---------|-------------|
 | `directory` | *(unset: off)* | Turns quick entry on, and names the folder its Claude starts in. Supports `~` expansion. Relative paths are resolved against `$HOME`. |
 
-With `directory` set, a double tap of the Option key in any app brings Cadre forward with a prompt box, and starts `claude` in that folder in a terminal kept out of the grid. Enter sends what you wrote to that Claude and shows its terminal in full view; Esc closes the box and the terminal and returns you to the app you were in. A tap counts when Option is pressed alone and let go within a quarter of a second, with the second press following inside three tenths of a second, and no other key pressed in between (so Option+Left twice is still two word jumps).
+With `directory` set, a double tap of the Option key in any app puts a prompt box near the bottom of the screen the pointer is on, over the app you are in, and starts `claude` in that folder in a terminal kept out of the grid. Enter brings Cadre forward on that terminal, in full view, and sends what you wrote to its Claude; Esc closes the box and the terminal and leaves you in the app you were in. A tap counts when Option is pressed alone and let go within a quarter of a second, with the second press following inside three tenths of a second, and no other key pressed in between (so Option+Left twice is still two word jumps).
 
 Notes:
 

@@ -25,6 +25,7 @@ const platform = @import("../platform/sdl.zig");
 const macos_input = @import("../platform/macos_input_source.zig");
 const macos_titlebar = @import("../platform/macos_titlebar.zig");
 const hotkey = @import("../platform/macos_hotkey.zig");
+const quick_panel = @import("../platform/macos_quick_panel.zig");
 
 /// User-facing app name (window title bar, bundle display name). Internal
 /// identifiers (config dir, sockets, tmux prefix, env vars) keep "cadre".
@@ -1165,17 +1166,14 @@ const PendingCommentSend = struct {
     send_after_ms: i64,
 };
 
-/// A quick entry on its way (double-tap Option, ui/components/quick_entry.zig):
+/// A quick entry on its way (double-tap Option, platform/macos_quick_panel.zig):
 /// from the shortcut until its text has reached Claude.
 const QuickEntry = struct {
     /// `SessionState.id` of the terminal started for it. Out of the grid
-    /// (hidden) while the box is up; shown when the text is sent.
+    /// (hidden) while the panel is up; shown when the text is sent.
     session_id: usize,
-    /// The app that was in front when the shortcut fired, to go back to on
-    /// Esc (retained, see hotkey.frontApp). Null when that was Cadre.
-    prev_app: ?*anyopaque = null,
-    /// Sent before Claude's input box was up: pasted once it is. Owned. Set
-    /// exactly when the box has closed.
+    /// Sent before Claude's input box was up: pasted once it is. Owned. Null
+    /// exactly while the panel is up.
     text: ?[]const u8 = null,
     /// Since when Claude's input box has been on that terminal's screen.
     box_since_ms: ?i64 = null,
@@ -1355,6 +1353,12 @@ const App = struct {
     /// events go to the focused window.
     fn dispatchEvent(self: *App, event: *c.SDL_Event, now: i64) !void {
         switch (event.type) {
+            // What is typed in the quick entry panel is for the panel alone.
+            c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_TEXT_INPUT, c.SDL_EVENT_TEXT_EDITING => if (quick_panel.swallowsKey(false)) return,
+            c.SDL_EVENT_KEY_UP => if (quick_panel.swallowsKey(event.key.key == c.SDLK_ESCAPE)) return,
+            else => {},
+        }
+        switch (event.type) {
             c.SDL_EVENT_KEYMAP_CHANGED => {
                 if (builtin.os.tag == .macos) {
                     self.input_source_tracker.capture() catch |err| {
@@ -1385,18 +1389,34 @@ const App = struct {
         self.focusedWindow().handleExternalSpawnRequest(pending, now);
     }
 
-    /// The quick entry shortcut fired (platform/macos_hotkey.zig): bring Cadre
-    /// in front of whatever app the user is in, and open the box in the
-    /// window last used.
+    /// The quick entry shortcut fired (platform/macos_hotkey.zig): put the
+    /// panel up over whatever app the user is in, and start its Claude in the
+    /// window last used. Cadre itself stays where it is until the text is sent.
     fn openQuickEntry(self: *App, now: i64) void {
         if (self.windows.items.len == 0 or self.quit_teardown.active) return;
-        // One at a time: a box already up, in any window, just comes forward.
-        const window = for (self.windows.items) |w| {
-            if (w.quick_entry_component.open) break w;
-        } else self.focusedWindow();
-        const prev_app = hotkey.frontApp();
-        hotkey.bringForward(window.pw.window);
-        window.openQuickEntry(prev_app, now);
+        // One at a time: a panel already up gets the keyboard back.
+        if (quick_panel.isOpen()) return quick_panel.focus();
+        self.focusedWindow().openQuickEntry(now);
+    }
+
+    /// Return or Esc in the quick entry panel, for the window whose entry it is.
+    fn handleQuickPanel(self: *App, event: quick_panel.Event, now: i64) void {
+        const allocator = self.allocator;
+        const owner: ?*Window = for (self.windows.items) |w| {
+            if (w.quickEntryOpen()) break w;
+        } else null;
+        switch (event) {
+            .cancel => if (owner) |w| w.cancelQuickEntry(),
+            .submit => |raw| {
+                defer allocator.free(raw);
+                const w = owner orelse return;
+                const text = (ui_mod.composer.normalizeSubmitText(allocator, raw) catch |err| blk: {
+                    log.warn("failed to prepare quick entry text: {}", .{err});
+                    break :blk null;
+                }) orelse return w.cancelQuickEntry();
+                w.submitQuickEntry(text, now);
+            },
+        }
     }
 
     fn handleControlClose(self: *App, pending: *control.PendingClose, now: i64) void {
@@ -2046,7 +2066,6 @@ const Window = struct {
     /// Render pixels the composer reserves at the bottom of the full view; the
     /// focused PTY gets the rows above it (0 while the composer is hidden).
     composer_height: c_int,
-    quick_entry_component: *ui_mod.quick_entry.QuickEntryComponent,
     /// The quick entry this window has on its way, if any.
     quick: ?QuickEntry,
 
@@ -2407,8 +2426,6 @@ const Window = struct {
         for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
         self.quick = null;
-        self.quick_entry_component = try ui_mod.quick_entry.QuickEntryComponent.init(allocator, self.pw.window);
-        try self.ui.register(self.quick_entry_component.asComponent());
 
         return self;
     }
@@ -2417,9 +2434,9 @@ const Window = struct {
     /// renderer before the window.
     fn destroy(self: *Window) void {
         const allocator = self.app.allocator;
+        if (self.quickEntryOpen()) quick_panel.hide();
         if (self.quick) |quick| {
             if (quick.text) |text| allocator.free(text);
-            if (quick.prev_app) |prev| hotkey.release(prev, false);
         }
         allocator.free(self.hosting_flags);
         allocator.free(self.grid_reserve_px);
@@ -2515,21 +2532,20 @@ const Window = struct {
             self.recent_folders_comp_ptr.overlay.state != .Closed;
     }
 
-    /// The quick entry shortcut: open the box and start Claude for it in a
+    /// This window's quick entry still has its panel up (nothing sent yet).
+    fn quickEntryOpen(self: *const Window) bool {
+        return if (self.quick) |quick| quick.text == null else false;
+    }
+
+    /// The quick entry shortcut: put the panel up and start Claude for it in a
     /// terminal kept out of the grid, so Claude boots while the text is being
-    /// written, nothing on screen moves until it is sent, and Esc leaves no
-    /// trace. `prev_app` as in `QuickEntry`; taken over.
-    fn openQuickEntry(self: *Window, prev_app: ?*anyopaque, now: i64) void {
+    /// written, nothing in the window moves until it is sent, and Esc leaves
+    /// no trace.
+    fn openQuickEntry(self: *Window, now: i64) void {
         const app = self.app;
         const allocator = app.allocator;
         const sessions = self.sessions;
-        var prev_kept = false;
-        defer if (!prev_kept) {
-            if (prev_app) |prev| hotkey.release(prev, false);
-        };
         const configured = app.config.quick_entry.directory orelse return;
-        // Already up: the shortcut only brought it forward.
-        if (self.quick_entry_component.open) return;
         // One still waiting for its Claude (which never came up, say) stops
         // waiting, and this one takes its place.
         self.shelveQuickEntry();
@@ -2569,7 +2585,14 @@ const Window = struct {
         if (session.resume_cmd) |old| allocator.free(old);
         session.resume_cmd = command;
 
-        if (!self.quick_entry_component.show(std.fs.path.basename(configured))) {
+        const theme = &app.theme;
+        if (!quick_panel.show(std.fs.path.basename(configured), .{
+            .background = panelRgb(theme.surface(1)),
+            .text = panelRgb(theme.foreground),
+            .caret = panelRgb(theme.accent),
+            .border = panelRgb(theme.chromeBorder()),
+            .caption = panelRgb(theme.chromeTextDim()),
+        })) {
             allocator.free(command);
             session.resume_cmd = null;
             return;
@@ -2583,26 +2606,23 @@ const Window = struct {
                 allocator.free(cmd);
                 session.resume_cmd = null;
             }
-            self.quick_entry_component.close();
+            quick_panel.hide();
             self.ui.showToast("Quick entry: failed to start a terminal", now);
             return;
         };
-        self.quick = .{ .session_id = session.id, .prev_app = prev_app };
-        prev_kept = true;
+        self.quick = .{ .session_id = session.id };
         log.info("quick entry: starting {s} in {s} (session {d})", .{ quick_entry_command, dir, session.id });
         compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
     }
 
-    /// Enter in the quick entry box: show the terminal started for it, in full
-    /// view, and send `text` (owned) to its Claude, now or as soon as it is up.
+    /// Return in the quick entry panel: bring Cadre forward on the terminal
+    /// started for it, in full view, and send `text` (owned) to its Claude,
+    /// now or as soon as it is up.
     fn submitQuickEntry(self: *Window, text: []const u8, now: i64) void {
         const quick = if (self.quick) |*q| q else {
             self.app.allocator.free(text);
             return;
         };
-        // Cadre keeps the screen from here: there is no going back to that app.
-        if (quick.prev_app) |prev| hotkey.release(prev, false);
-        quick.prev_app = null;
         quick.text = text;
         const session_id = quick.session_id;
         if (findSessionIndexById(self.sessions, session_id)) |idx| {
@@ -2610,22 +2630,22 @@ const Window = struct {
             // The reveal sorted it into the grid: look it up again.
             if (findSessionIndexById(self.sessions, session_id)) |shown| self.showFull(shown, now);
         }
+        hotkey.bringForward(self.pw.window);
         self.tickQuickEntry(now);
     }
 
-    /// Esc in the quick entry box: close the terminal started for it, and give
-    /// the screen back to the app the shortcut was pressed in.
+    /// Esc in the quick entry panel: close the terminal started for it. The
+    /// app the user was in never lost its place, so there is nothing to undo.
     fn cancelQuickEntry(self: *Window) void {
         const quick = self.quick orelse return;
         self.quick = null;
         if (quick.text) |text| self.app.allocator.free(text);
         self.closeQuickEntryTerminal(quick.session_id);
-        if (quick.prev_app) |prev| hotkey.release(prev, true);
     }
 
     /// Per frame while a quick entry is on its way: watch its terminal for
-    /// Claude's input box, tell the box on screen, and send the text once it
-    /// has been written and Claude can take it.
+    /// Claude's input box, tell the panel, and send the text once it has been
+    /// written and Claude can take it.
     fn tickQuickEntry(self: *Window, now: i64) void {
         const allocator = self.app.allocator;
         const quick = if (self.quick) |*q| q else return;
@@ -2640,11 +2660,10 @@ const Window = struct {
             quick.box_since_ms = now;
         }
         const ready = if (quick.box_since_ms) |since| now - since >= quick_entry_settle_ms else false;
-        self.quick_entry_component.setReady(ready);
 
         // ponytail: waits for as long as the terminal lives. A Claude that
         // never starts holds the text until the next quick entry shelves it.
-        const text = quick.text orelse return;
+        const text = quick.text orelse return quick_panel.setReady(ready);
         if (!ready) return;
         self.quick = null;
         defer allocator.free(text);
@@ -2666,7 +2685,6 @@ const Window = struct {
     fn shelveQuickEntry(self: *Window) void {
         const quick = self.quick orelse return;
         self.quick = null;
-        if (quick.prev_app) |prev| hotkey.release(prev, false);
         const text = quick.text orelse return;
         defer self.app.allocator.free(text);
         const idx = findSessionIndexById(self.sessions, quick.session_id) orelse return;
@@ -2679,11 +2697,10 @@ const Window = struct {
         const quick = self.quick orelse return;
         self.quick = null;
         log.warn("quick entry: session {d} is gone", .{quick.session_id});
-        self.quick_entry_component.close();
-        if (quick.prev_app) |prev| hotkey.release(prev, false);
         if (quick.text) |text| {
             self.app.allocator.free(text);
         } else {
+            quick_panel.hide();
             // Still out of the grid: don't leave a dead terminal behind there.
             self.closeQuickEntryTerminal(quick.session_id);
         }
@@ -4617,8 +4634,6 @@ const Window = struct {
                 self.composer_height = height;
                 self.applyTerminalLayout();
             },
-            .QuickEntrySubmit => |submit| self.submitQuickEntry(submit.text, now),
-            .QuickEntryCancel => self.cancelQuickEntry(),
         };
         if (self.refreshGridReserves(&ui_update_host)) self.applyTerminalLayout();
 
@@ -5110,7 +5125,9 @@ pub fn run() !void {
 
     // Quick entry is on when it has a folder to start Claude in.
     if (app.config.quick_entry.directory != null) {
-        hotkey.install(.{ .context = &app.core, .callback = platform.pushWakeEventFromOpaque });
+        const wake = hotkey.Wake{ .context = &app.core, .callback = platform.pushWakeEventFromOpaque };
+        hotkey.install(wake);
+        quick_panel.install(wake);
     }
 
     // Main loop: optionally wait for the next wake-worthy event, then handle SDL
@@ -5148,6 +5165,7 @@ pub fn run() !void {
         if (!app.running) break;
         app.createWindowFromRequest();
         if (hotkey.take()) app.openQuickEntry(now);
+        if (quick_panel.take(allocator)) |panel_event| app.handleQuickPanel(panel_event, now);
 
         app.loop.run(.no_wait) catch |err| {
             log.err("xev loop run failed: {}", .{err});
@@ -5247,6 +5265,10 @@ pub fn run() !void {
         std.debug.print("Failed to save persistence: {}\n", .{err});
     };
     app.persistence.deinit(allocator);
+}
+
+fn panelRgb(color: c.SDL_Color) quick_panel.Rgb {
+    return .{ .r = color.r, .g = color.g, .b = color.b };
 }
 
 // ponytail: manual len+1 [] buffer, not allocator.dupeZ — dupeZ's [:0] return

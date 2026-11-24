@@ -43,6 +43,6 @@ test {
     _ = @import("os/host.zig");
     _ = @import("ui/components/composer.zig");
     _ = @import("ui/components/composer_view.zig");
-    _ = @import("ui/components/quick_entry.zig");
     _ = @import("platform/macos_hotkey.zig");
+    _ = @import("platform/macos_quick_panel.zig");
 }
