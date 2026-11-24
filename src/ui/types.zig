@@ -87,6 +87,10 @@ pub const PromptBox = struct {
     /// of the input when it holds nothing else. Not `typed`: the composer's box
     /// starts right of them, so they stay on show.
     lead: u16 = 0,
+    /// Rows the input box really is below the rows given here, while the
+    /// composer holds its own box still through a paste (composer.zig
+    /// `steady`). `prompt_box.find` never sets it.
+    drop: u16 = 0,
 
     pub fn textRows(self: PromptBox) u16 {
         return self.last - self.first + 1;
@@ -99,15 +103,19 @@ pub const prompt_gutter_cols: c_int = 2;
 /// The composer's box reaches `px` pixels above Claude's input box and covers
 /// what was there, so the renderer redraws the box's top rule and prompt mark
 /// that much higher (renderer.liftPromptRows). Pixels, not rows: the box can
-/// be part-way through a slide.
+/// be part-way through a slide. Rows are where the terminal has them.
 pub const PromptLift = struct {
     /// The pane it is on (index into the window's sessions).
     session: usize,
     top_rule: u16,
     first: u16,
+    last: u16,
     px: c_int,
     /// `PromptBox.lead`: cells right of the mark that move up with it.
     lead: u16 = 0,
+    /// `PromptBox.drop`: the box ends this many rows above the input's last
+    /// row, so the rows under the input are drawn that much higher too.
+    drop: u16 = 0,
 };
 
 /// A font terminals are drawn in, in render pixels.

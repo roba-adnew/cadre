@@ -411,6 +411,16 @@ fn liftPromptRows(renderer: *c.SDL_Renderer, tex: *c.SDL_Texture, rect: Rect, li
     fill(renderer, rect.x + padding, rect.y + first_y, gutter_w, cell_h);
     copyUp(renderer, tex, rect.x, rect.y, padding, rule_y, content_w, cell_h, up);
     copyUp(renderer, tex, rect.x, rect.y, padding, first_y, gutter_w, cell_h, up);
+
+    // The box held above an input that dropped for a moment: what is under
+    // the input comes up as far, over the rows the box has left.
+    const drop = @as(c_int, lift.drop) * cell_h;
+    const below_y = padding + (@as(c_int, lift.last) + 1) * cell_h;
+    const below_h = rect.h - padding - below_y;
+    if (drop > 0 and below_h > 0) {
+        fill(renderer, rect.x + padding, rect.y + below_y - drop, content_w, below_h + drop);
+        copyUp(renderer, tex, rect.x, rect.y, padding, below_y, content_w, below_h, drop);
+    }
 }
 
 fn drawInactiveBorder(renderer: *c.SDL_Renderer, rect: Rect, color: c.SDL_Color, ui_scale: f32) void {

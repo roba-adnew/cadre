@@ -80,6 +80,12 @@ const spot_grace_ms: i64 = 150;
 /// A live Claude whose input box has never been found gets the docked box
 /// after this long (see `fallbackDock`).
 const fallback_delay_ms: i64 = 3000;
+/// While Claude takes in a pasted image it folds its status lines into one
+/// "Pasting..." row, which drops its input box (a row per line folded) and
+/// brings it back: this long after the paste, and this far down, the box
+/// holds still instead of following (`steady`).
+const paste_settle_ms: i64 = 1500;
+const paste_drop_rows: u16 = 4;
 /// The toggle on the rule under Claude's input box: what a click does.
 const toggle_hide = " hide ";
 const toggle_show = " show ";
@@ -326,9 +332,18 @@ pub fn inlineRect(surface: Surface, spot: PromptBox, rows: c_int) Rect {
 /// row of Claude's input box in pane `session`, for the renderer to move that
 /// box's rule and prompt mark up with it (null when it doesn't).
 pub fn promptLift(surface: Surface, spot: PromptBox, rect: Rect, session: usize) ?types.PromptLift {
-    const px = surface.y + @as(c_int, spot.first) * surface.font.cell_h - rect.y;
+    // The terminal has the input box `spot.drop` rows under where the box is.
+    const px = surface.y + (@as(c_int, spot.first) + spot.drop) * surface.font.cell_h - rect.y;
     if (px <= 0) return null;
-    return .{ .session = session, .top_rule = spot.top_rule, .first = spot.first, .px = px, .lead = spot.lead };
+    return .{
+        .session = session,
+        .top_rule = spot.top_rule + spot.drop,
+        .first = spot.first + spot.drop,
+        .last = spot.last + spot.drop,
+        .px = px,
+        .lead = spot.lead,
+        .drop = spot.drop,
+    };
 }
 
 /// The toggle's place: on the rule under Claude's input box, one cell in from
@@ -398,6 +413,8 @@ pub const ComposerComponent = struct {
     spot_held: bool = false,
     /// Claude's input box has been found at least once this run.
     spot_seen: bool = false,
+    /// When Cmd+V last sent an image on the clipboard to Claude (`steady`).
+    image_paste_ms: ?i64 = null,
     /// When a live Claude was first seen without its input box, while none
     /// has ever been found (`fallbackDock`).
     no_spot_since_ms: ?i64 = null,
@@ -513,6 +530,8 @@ pub const ComposerComponent = struct {
                 if (!view.isFocused()) return false;
                 const key = event.key.key;
                 const mod = event.key.mod;
+                // Sending moves Claude's input box for good; don't hold ours (`steady`).
+                if (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER) self.image_paste_ms = null;
                 // Nothing in the box to delete: Backspace takes off the last
                 // image attached in Claude's input, left of the box.
                 if (key == c.SDLK_BACKSPACE and view.textLength() == 0 and self.imagesAttached()) return false;
@@ -531,7 +550,13 @@ pub const ComposerComponent = struct {
                                 c.SDLK_Z => view.perform(if (shift) .redo else .undo),
                                 // A screenshot on the clipboard goes to the terminal's
                                 // image passthrough (Claude attaches it), not the box.
-                                c.SDLK_V => if (ComposerView.clipboardIsImageOnly()) return false else view.perform(.paste),
+                                c.SDLK_V => {
+                                    if (ComposerView.clipboardIsImageOnly()) {
+                                        self.image_paste_ms = host.now_ms;
+                                        return false;
+                                    }
+                                    view.perform(.paste);
+                                },
                                 else => {}, // arrows/backspace: the text view handles them
                             }
                         }
@@ -797,19 +822,24 @@ pub const ComposerComponent = struct {
             // Off lasts only for the input box it was turned off on: another
             // pane's, or this one's again after a dialog or a change of view,
             // starts with the composer showing.
-            if (self.spot == null or self.spot_key != key) {
+            const taken_up = self.spot == null or self.spot_key != key;
+            if (taken_up) {
                 self.user_hidden = false;
                 self.forced_on = false;
                 self.spot_fresh = true;
             }
             // Its input emptied (sent, or cleared): the next text there is new.
             if (!box.typed) self.forced_on = false;
-            self.spot = box;
+            const shown = if (taken_up) box else self.steady(box, host.now_ms);
+            // Back where it was: that paste is over, and a drop after it is
+            // for something else (a message sent, say).
+            if (shown.drop == 0 and (self.spot orelse shown).drop > 0) self.image_paste_ms = null;
+            self.spot = shown;
             self.spot_ms = host.now_ms;
             self.spot_key = key;
             self.spot_seen = true;
             self.fallback_docked = false;
-            return box;
+            return shown;
         }
         const held = self.spot orelse return null;
         if (self.spot_key == key and host.now_ms - self.spot_ms < spot_grace_ms) {
@@ -818,6 +848,24 @@ pub const ComposerComponent = struct {
         }
         self.spot = null;
         return null;
+    }
+
+    /// `box` (where Claude's input box is now) at the rows the composer has
+    /// it at, when an image paste has just dropped it a few rows: Claude will
+    /// bring it back, so the composer's box stays put, and the renderer draws
+    /// the terminal's rows around it as if the input had (`PromptBox.drop`).
+    fn steady(self: *const ComposerComponent, box: PromptBox, now_ms: i64) PromptBox {
+        const was = self.spot orelse return box;
+        const pasted = self.image_paste_ms orelse return box;
+        if (now_ms - pasted >= paste_settle_ms) return box;
+        if (box.top_rule <= was.top_rule or box.top_rule - was.top_rule > paste_drop_rows) return box;
+        if (box.textRows() != was.textRows()) return box;
+        var held = box;
+        held.top_rule = was.top_rule;
+        held.first = was.first;
+        held.last = was.last;
+        held.drop = box.top_rule - was.top_rule;
+        return held;
     }
 
     /// Claude live in the focused pane, its input box not on screen. Normally
@@ -1205,8 +1253,9 @@ pub const ComposerComponent = struct {
 
     fn wantsFrameFn(ptr: *anyopaque, _: *const types.UiHost) bool {
         const self: *ComposerComponent = @ptrCast(@alignCast(ptr));
-        // The slide and the two waits in `place` run on the clock, not on events.
-        return self.first_frame.wantsFrame() or self.slide != null or self.spot_held or self.fallback_pending;
+        // The slide and the waits in `place` run on the clock, not on events.
+        const holding = if (self.spot) |spot| spot.drop > 0 else false;
+        return self.first_frame.wantsFrame() or self.slide != null or self.spot_held or self.fallback_pending or holding;
     }
 
     fn deinitFn(ptr: *anyopaque, _: *c.SDL_Renderer) void {
@@ -1390,7 +1439,7 @@ test "on Claude's input box: the box covers its text rows and grows upward" {
     const three = inlineRect(pane, spot, 3);
     try testing.expectEqual(one.y + one.h, three.y + three.h);
     try testing.expectEqual(@as(c_int, pad + 29 * 20), three.y);
-    try testing.expectEqual(types.PromptLift{ .session = 7, .top_rule = 30, .first = 31, .px = 2 * 20 }, promptLift(pane, spot, three, 7).?);
+    try testing.expectEqual(types.PromptLift{ .session = 7, .top_rule = 30, .first = 31, .last = 31, .px = 2 * 20 }, promptLift(pane, spot, three, 7).?);
 
     // A long draft stops at 40% of the pane's rows; the rest scrolls.
     try testing.expectEqual(@as(c_int, 16), inlineRows(pane, spot, 60 * 20));
@@ -1598,6 +1647,62 @@ test "the composer steps aside while Claude's own input holds text" {
     try testing.expect(composer.place(&host) == .none);
     try testing.expect(composer.slide == null);
     try testing.expectEqual(@as(f32, 1), composer.slid);
+}
+
+test "the box holds still while an image paste drops Claude's input box" {
+    var sessions = [_]types.SessionUiInfo{.{ .dead = false, .spawned = true, .claude_live = true }};
+    var host = testHost(&sessions);
+    host.term_cols = 80;
+    host.term_rows = 40;
+    host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
+    host.now_ms = 10_000;
+    const pane = surfaceOf(&host, 0) orelse return error.TestUnexpectedResult;
+    const at = PromptBox{ .top_rule = 30, .first = 31, .last = 31 };
+    const lower = PromptBox{ .top_rule = 31, .first = 32, .last = 32 };
+    var composer = ComposerComponent{ .allocator = testing.allocator, .window = undefined, .root = undefined, .view = null, .animate = false };
+
+    // No paste: the box goes where Claude's input box goes.
+    sessions[0].prompt_box = at;
+    try testing.expectEqual(at, composer.place(&host).on_prompt.spot);
+    sessions[0].prompt_box = lower;
+    try testing.expectEqual(lower, composer.place(&host).on_prompt.spot);
+    sessions[0].prompt_box = at;
+    try testing.expectEqual(at, composer.place(&host).on_prompt.spot);
+
+    // An image goes to Claude, which folds its two status lines into one
+    // "Pasting..." row: its input box drops a row, the composer's stays, and
+    // the renderer is told to draw the terminal's rows a row higher.
+    composer.image_paste_ms = host.now_ms;
+    host.now_ms += 40;
+    sessions[0].prompt_box = lower;
+    const held = composer.place(&host).on_prompt.spot;
+    try testing.expectEqual(PromptBox{ .top_rule = 30, .first = 31, .last = 31, .drop = 1 }, held);
+    try testing.expectEqual(inlineRect(pane, at, 1), inlineRect(pane, held, 1));
+    try testing.expectEqual(
+        types.PromptLift{ .session = 0, .top_rule = 31, .first = 32, .last = 32, .px = 20, .drop = 1 },
+        promptLift(pane, held, inlineRect(pane, held, 1), 0).?,
+    );
+    // The image's token turns up while it is down there, then it comes back.
+    host.now_ms += 200;
+    sessions[0].prompt_box = .{ .top_rule = 31, .first = 32, .last = 32, .lead = 10 };
+    try testing.expectEqual(PromptBox{ .top_rule = 30, .first = 31, .last = 31, .lead = 10, .drop = 1 }, composer.place(&host).on_prompt.spot);
+    host.now_ms += 20;
+    sessions[0].prompt_box = .{ .top_rule = 30, .first = 31, .last = 31, .lead = 10 };
+    try testing.expectEqual(PromptBox{ .top_rule = 30, .first = 31, .last = 31, .lead = 10 }, composer.place(&host).on_prompt.spot);
+
+    // That paste is over: a drop after it is followed.
+    try testing.expect(composer.image_paste_ms == null);
+    sessions[0].prompt_box = lower;
+    try testing.expectEqual(lower, composer.place(&host).on_prompt.spot);
+
+    // Still down when the wait runs out: follow it after all.
+    sessions[0].prompt_box = at;
+    _ = composer.place(&host);
+    composer.image_paste_ms = host.now_ms;
+    sessions[0].prompt_box = lower;
+    try testing.expectEqual(@as(u16, 1), composer.place(&host).on_prompt.spot.drop);
+    host.now_ms += paste_settle_ms;
+    try testing.expectEqual(lower, composer.place(&host).on_prompt.spot);
 }
 
 test "the box is found by its place among the rows on show, and docks only if never found" {
