@@ -58,7 +58,7 @@ pub fn resolveWorktreeDir(allocator: std.mem.Allocator, repo_root: []const u8, n
 /// Resolve the config directory to an absolute path.
 /// Expands `~`/`~/...` relative to home, resolves relative paths against home,
 /// and returns absolute paths as-is. Returns default when config_dir is null.
-fn resolveConfigDir(allocator: std.mem.Allocator, home: []const u8, config_dir: ?[]const u8) ![]u8 {
+pub fn resolveConfigDir(allocator: std.mem.Allocator, home: []const u8, config_dir: ?[]const u8) ![]u8 {
     const dir = config_dir orelse
         return std.fs.path.join(allocator, &.{ home, ".cadre-worktrees" });
 

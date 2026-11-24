@@ -376,6 +376,27 @@ pub const WorktreeConfig = struct {
     }
 };
 
+/// Quick entry: double-tap Option from any app for a prompt box, with Claude
+/// booting behind it in `directory`.
+pub const QuickEntryConfig = struct {
+    /// Folder that Claude starts in ("~" expands). Unset: the shortcut is off.
+    directory: ?[]const u8 = null,
+    directory_owned: bool = false,
+
+    pub fn deinit(self: *QuickEntryConfig, allocator: std.mem.Allocator) void {
+        if (self.directory_owned) {
+            if (self.directory) |v| allocator.free(v);
+        }
+        self.directory = null;
+        self.directory_owned = false;
+    }
+
+    pub fn duplicate(self: QuickEntryConfig, allocator: std.mem.Allocator) !QuickEntryConfig {
+        const dir_dup = if (self.directory) |d| try allocator.dupe(u8, d) else null;
+        return .{ .directory = dir_dup, .directory_owned = dir_dup != null };
+    }
+};
+
 pub const Persistence = struct {
     const terminal_key_prefix = "terminal_";
     const max_recent_folders: usize = 1000;
@@ -1142,6 +1163,7 @@ pub const Config = struct {
     metrics: MetricsConfig = .{},
     logging: LoggingConfig = .{},
     worktree: WorktreeConfig = .{},
+    quick_entry: QuickEntryConfig = .{},
 
     pub fn load(allocator: std.mem.Allocator) LoadError!Config {
         const config_path = try getConfigPath(allocator);
@@ -1260,6 +1282,10 @@ pub const Config = struct {
             \\# directory = "~/.cadre-worktrees"  # Base directory for new worktrees (default: ~/.cadre-worktrees)
             \\# init_command = "script/setup"          # Command to run after creating a worktree
             \\
+            \\# Quick entry: double-tap Option from any app for a prompt box (macOS)
+            \\# [quick_entry]
+            \\# directory = "~/code/my-project"  # Folder Claude starts in; unset = shortcut off
+            \\
         ;
 
         try writeFileAtomicallyAbsolute(config_path, template);
@@ -1301,6 +1327,7 @@ pub const Config = struct {
         config.theme = try config.theme.duplicate(allocator);
         config.logging = try config.logging.duplicate(allocator);
         config.worktree = try config.worktree.duplicate(allocator);
+        config.quick_entry = try config.quick_entry.duplicate(allocator);
 
         return config;
     }
@@ -1310,6 +1337,7 @@ pub const Config = struct {
         self.theme.deinit(allocator);
         self.logging.deinit(allocator);
         self.worktree.deinit(allocator);
+        self.quick_entry.deinit(allocator);
     }
 
     pub fn getFontSize(self: Config) i32 {
@@ -1556,6 +1584,32 @@ test "Config - parses [paste] image_passthrough" {
     defer result.deinit();
 
     try std.testing.expectEqual(true, result.value.paste.image_passthrough);
+}
+
+test "Config - [quick_entry] directory is off by default and parses" {
+    const allocator = std.testing.allocator;
+
+    var empty_parser = toml.Parser(Config).init(allocator);
+    defer empty_parser.deinit();
+    var empty = try empty_parser.parseString("");
+    defer empty.deinit();
+    try std.testing.expect(empty.value.quick_entry.directory == null);
+
+    var parser = toml.Parser(Config).init(allocator);
+    defer parser.deinit();
+    var result = try parser.parseString(
+        \\[quick_entry]
+        \\directory = "~/code/project"
+        \\
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("~/code/project", result.value.quick_entry.directory.?);
+
+    // The loaded config owns its copy (the parser's is freed with the parser).
+    var owned = try result.value.quick_entry.duplicate(allocator);
+    defer owned.deinit(allocator);
+    try std.testing.expect(owned.directory_owned);
+    try std.testing.expectEqualStrings("~/code/project", owned.directory.?);
 }
 
 test "LoggingConfig.getMinLevel falls back to info for unknown values" {

@@ -24,6 +24,8 @@ const prompt_mark: u21 = 0x276F; // ❯
 /// Rows searched, counted up from the bottom of the screen: the box sits just
 /// above the status lines, or above a completion menu opened under it.
 const scan_rows: usize = 30;
+/// Rows `onScreen` looks at: every row of any screen a pane will have.
+const whole_screen_rows: usize = 512;
 /// Cells of the input's first row looked at for text of the user's.
 const typed_scan_cols: usize = 24;
 /// Cells of the input's first row read for image tokens.
@@ -66,16 +68,11 @@ pub fn locate(kinds: []const RowKind) ?PromptBox {
 
 /// Claude Code's input box on `terminal`'s active screen, if it is showing.
 pub fn find(terminal: *const ghostty_vt.Terminal) ?PromptBox {
-    const rows: usize = terminal.rows;
     if (terminal.cols < 2) return null;
-    const count = @min(rows, scan_rows);
-    const top = rows - count;
-    var kinds: [scan_rows]RowKind = undefined;
-    for (kinds[0..count], 0..) |*kind, i| {
-        kind.* = classify(cellCodepoint(terminal, 0, top + i), cellCodepoint(terminal, 1, top + i));
-    }
-    const box = locate(kinds[0..count]) orelse return null;
-    const offset: u16 = @intCast(top);
+    var buf: [scan_rows]RowKind = undefined;
+    const kinds = rowKinds(terminal, &buf);
+    const box = locate(kinds) orelse return null;
+    const offset: u16 = @intCast(terminal.rows - kinds.len);
     const first = box.first + offset;
     const lead = if (box.textRows() == 1) rowImageLead(terminal, first) else 0;
     return .{
@@ -86,6 +83,27 @@ pub fn find(terminal: *const ghostty_vt.Terminal) ?PromptBox {
         .typed = lead == 0 and (box.textRows() > 1 or rowHasTypedText(terminal, first)),
         .lead = lead,
     };
+}
+
+/// Whether Claude Code's input box is anywhere on `terminal`'s active screen,
+/// which is to say Claude is up and taking input. `find` looks at the bottom
+/// rows only, where the composer can use the box; a Claude that has only just
+/// started can draw it at the top of a tall screen, right under its banner.
+pub fn onScreen(terminal: *const ghostty_vt.Terminal) bool {
+    if (terminal.cols < 2) return false;
+    var buf: [whole_screen_rows]RowKind = undefined;
+    return locate(rowKinds(terminal, &buf)) != null;
+}
+
+/// What the screen's last `buf.len` rows are, top to bottom.
+fn rowKinds(terminal: *const ghostty_vt.Terminal, buf: []RowKind) []const RowKind {
+    const rows: usize = terminal.rows;
+    const count = @min(rows, buf.len);
+    const top = rows - count;
+    for (buf[0..count], 0..) |*kind, i| {
+        kind.* = classify(cellCodepoint(terminal, 0, top + i), cellCodepoint(terminal, 1, top + i));
+    }
+    return buf[0..count];
 }
 
 /// Cells `text` (an input row, right of the prompt mark) gives to Claude's
@@ -293,6 +311,29 @@ test "find tells an input holding the user's text from an empty one or a dimmed 
         try testing.expectEqual(@as(u16, 2), box.textRows());
         try testing.expect(box.typed);
     }
+}
+
+test "onScreen sees an input box at the top of a tall screen, where find does not look" {
+    const allocator = testing.allocator;
+    const rule = "─" ** 40;
+    // A Claude that has just started: banner, input box, status, then nothing.
+    var fresh = try ghostty_vt.Terminal.init(allocator, .{ .cols = 40, .rows = scan_rows + 10, .max_scrollback = 0 });
+    defer fresh.deinit(allocator);
+    try fresh.screens.active.testWriteString("Claude Code\n\n" ++ rule ++ "\n❯\u{A0}\n" ++ rule ++ "\n  status");
+    try testing.expect(find(&fresh) == null);
+    try testing.expect(onScreen(&fresh));
+
+    // At the bottom rows, both see it.
+    var settled = try testTerminal(allocator, "", .plain);
+    defer settled.deinit(allocator);
+    try testing.expect(find(&settled) != null);
+    try testing.expect(onScreen(&settled));
+
+    // A dialog in the box's place (asking to trust the folder, say): not up yet.
+    var asking = try ghostty_vt.Terminal.init(allocator, .{ .cols = 40, .rows = scan_rows + 10, .max_scrollback = 0 });
+    defer asking.deinit(allocator);
+    try asking.screens.active.testWriteString(rule ++ "\n Do you trust the files in this folder?\n ❯ 1. Yes\n   2. No");
+    try testing.expect(!onScreen(&asking));
 }
 
 test "find tells attached images alone from text of the user's" {

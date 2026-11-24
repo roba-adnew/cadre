@@ -242,6 +242,26 @@ Creating worktrees outside the repository tree prevents agents (Claude Code, Cod
 
 Existing worktrees (including legacy ones under `.cadre/` inside the repo) remain visible in the worktree picker and can be switched to or removed normally.
 
+### Quick Entry Configuration
+
+```toml
+[quick_entry]
+directory = "~/code/my-project"  # Folder Claude starts in
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `directory` | *(unset: off)* | Turns quick entry on, and names the folder its Claude starts in. Supports `~` expansion. Relative paths are resolved against `$HOME`. |
+
+With `directory` set, a double tap of the Option key in any app brings Cadre forward with a prompt box, and starts `claude` in that folder in a terminal kept out of the grid. Enter sends what you wrote to that Claude and shows its terminal in full view; Esc closes the box and the terminal and returns you to the app you were in. A tap counts when Option is pressed alone and let go within a quarter of a second, with the second press following inside three tenths of a second, and no other key pressed in between (so Option+Left twice is still two word jumps).
+
+Notes:
+
+- macOS on Apple silicon only. The shortcut is fixed; it is the one Claude Desktop uses for its own quick entry, so turn that off there (Claude Desktop's settings) or both apps will answer.
+- Cadre listens for modifier-key changes only. At launch, `~/Library/Logs/Cadre/cadre.log` records `quick entry shortcut installed` together with whether Cadre holds the Accessibility permission, and it records `quick entry shortcut fired` on each double tap. If the shortcut is installed but never fires and the permission is not granted, grant it under System Settings → Privacy & Security → Accessibility and relaunch.
+- A folder Claude has not been run in before first asks whether you trust it; your text is sent once you have answered and Claude's input box is up.
+- Changes take effect on the next launch.
+
 ### Complete Example
 
 ```toml
@@ -294,6 +314,9 @@ min_level = "info"
 [worktree]
 # directory = "~/.cadre-worktrees"
 # init_command = "script/setup"
+
+[quick_entry]
+# directory = "~/code/my-project"
 ```
 
 ## persistence.toml

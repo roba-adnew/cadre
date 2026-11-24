@@ -12,6 +12,7 @@ const input_text = @import("input_text.zig");
 const layout = @import("layout.zig");
 const terminal_actions = @import("terminal_actions.zig");
 const ui_host = @import("ui_host.zig");
+const prompt_box = @import("prompt_box.zig");
 const test_probe = @import("test_probe.zig");
 const worktree = @import("worktree.zig");
 const control = @import("control.zig");
@@ -23,6 +24,7 @@ const view_state = @import("../ui/session_view_state.zig");
 const platform = @import("../platform/sdl.zig");
 const macos_input = @import("../platform/macos_input_source.zig");
 const macos_titlebar = @import("../platform/macos_titlebar.zig");
+const hotkey = @import("../platform/macos_hotkey.zig");
 
 /// User-facing app name (window title bar, bundle display name). Internal
 /// identifiers (config dir, sockets, tmux prefix, env vars) keep "cadre".
@@ -1163,6 +1165,28 @@ const PendingCommentSend = struct {
     send_after_ms: i64,
 };
 
+/// A quick entry on its way (double-tap Option, ui/components/quick_entry.zig):
+/// from the shortcut until its text has reached Claude.
+const QuickEntry = struct {
+    /// `SessionState.id` of the terminal started for it. Out of the grid
+    /// (hidden) while the box is up; shown when the text is sent.
+    session_id: usize,
+    /// The app that was in front when the shortcut fired, to go back to on
+    /// Esc (retained, see hotkey.frontApp). Null when that was Cadre.
+    prev_app: ?*anyopaque = null,
+    /// Sent before Claude's input box was up: pasted once it is. Owned. Set
+    /// exactly when the box has closed.
+    text: ?[]const u8 = null,
+    /// Since when Claude's input box has been on that terminal's screen.
+    box_since_ms: ?i64 = null,
+};
+
+/// What the quick entry's terminal runs once its shell is up.
+const quick_entry_command = "claude";
+/// Claude's input box has to stay on screen this long before text is pasted
+/// into it: its first paint can come in pieces. By-eye knob.
+const quick_entry_settle_ms: i64 = 150;
+
 // "hosting" badge state for the hidden switcher. Detection spawns
 // subprocesses, so it only polls while the switcher modal is open.
 const hosting_poll_interval_ms: i64 = 5000;
@@ -1359,6 +1383,20 @@ const App = struct {
 
     fn handleControlSpawn(self: *App, pending: *control.PendingSpawn, now: i64) void {
         self.focusedWindow().handleExternalSpawnRequest(pending, now);
+    }
+
+    /// The quick entry shortcut fired (platform/macos_hotkey.zig): bring Cadre
+    /// in front of whatever app the user is in, and open the box in the
+    /// window last used.
+    fn openQuickEntry(self: *App, now: i64) void {
+        if (self.windows.items.len == 0 or self.quit_teardown.active) return;
+        // One at a time: a box already up, in any window, just comes forward.
+        const window = for (self.windows.items) |w| {
+            if (w.quick_entry_component.open) break w;
+        } else self.focusedWindow();
+        const prev_app = hotkey.frontApp();
+        hotkey.bringForward(window.pw.window);
+        window.openQuickEntry(prev_app, now);
     }
 
     fn handleControlClose(self: *App, pending: *control.PendingClose, now: i64) void {
@@ -2008,6 +2046,9 @@ const Window = struct {
     /// Render pixels the composer reserves at the bottom of the full view; the
     /// focused PTY gets the rows above it (0 while the composer is hidden).
     composer_height: c_int,
+    quick_entry_component: *ui_mod.quick_entry.QuickEntryComponent,
+    /// The quick entry this window has on its way, if any.
+    quick: ?QuickEntry,
 
     /// Order: SDL window -> renderer -> fonts -> sizes -> sessions -> restore ->
     /// caches -> UI. Mirrors the pre-extraction init sequence of run().
@@ -2365,6 +2406,9 @@ const Window = struct {
         self.composer_component.animate = app.animations_enabled;
         for (sessions) |session| self.restoreComposerDraft(session);
         try self.ui.register(self.composer_component.asComponent());
+        self.quick = null;
+        self.quick_entry_component = try ui_mod.quick_entry.QuickEntryComponent.init(allocator, self.pw.window);
+        try self.ui.register(self.quick_entry_component.asComponent());
 
         return self;
     }
@@ -2373,6 +2417,10 @@ const Window = struct {
     /// renderer before the window.
     fn destroy(self: *Window) void {
         const allocator = self.app.allocator;
+        if (self.quick) |quick| {
+            if (quick.text) |text| allocator.free(text);
+            if (quick.prev_app) |prev| hotkey.release(prev, false);
+        }
         allocator.free(self.hosting_flags);
         allocator.free(self.grid_reserve_px);
         self.render_cache.deinit();
@@ -2465,6 +2513,212 @@ const Window = struct {
             self.context_menu_component.open or
             self.worktree_comp_ptr.overlay.state != .Closed or
             self.recent_folders_comp_ptr.overlay.state != .Closed;
+    }
+
+    /// The quick entry shortcut: open the box and start Claude for it in a
+    /// terminal kept out of the grid, so Claude boots while the text is being
+    /// written, nothing on screen moves until it is sent, and Esc leaves no
+    /// trace. `prev_app` as in `QuickEntry`; taken over.
+    fn openQuickEntry(self: *Window, prev_app: ?*anyopaque, now: i64) void {
+        const app = self.app;
+        const allocator = app.allocator;
+        const sessions = self.sessions;
+        var prev_kept = false;
+        defer if (!prev_kept) {
+            if (prev_app) |prev| hotkey.release(prev, false);
+        };
+        const configured = app.config.quick_entry.directory orelse return;
+        // Already up: the shortcut only brought it forward.
+        if (self.quick_entry_component.open) return;
+        // One still waiting for its Claude (which never came up, say) stops
+        // waiting, and this one takes its place.
+        self.shelveQuickEntry();
+
+        const dir = worktree.resolveConfigDir(allocator, std.posix.getenv("HOME") orelse "", configured) catch |err| {
+            log.warn("quick entry: failed to resolve directory {s}: {}", .{ configured, err });
+            return;
+        };
+        defer allocator.free(dir);
+        if (validateExternalSpawnCwd(dir) != null) {
+            log.warn("quick entry: [quick_entry] directory {s} is not a folder", .{dir});
+            self.ui.showToast("Quick entry: folder not found", now);
+            return;
+        }
+        const dir_buf = allocZ(allocator, dir) catch |err| {
+            log.warn("quick entry: failed to allocate directory: {}", .{err});
+            return;
+        };
+        defer allocator.free(dir_buf);
+        const dir_z: [:0]const u8 = dir_buf[0..dir.len :0];
+
+        // The last free slot: hidden terminals are parked at that end anyway.
+        var slot = sessions.len;
+        while (slot > 0 and sessions[slot - 1].spawned) slot -= 1;
+        if (slot == 0) {
+            self.ui.showToast("All terminals in use", now);
+            return;
+        }
+        const session = sessions[slot - 1];
+
+        // Run by the shell's rc once it has loaded, like a restored terminal's
+        // resume command: never typed into the PTY, so nothing can eat it.
+        const command = allocator.dupe(u8, quick_entry_command) catch |err| {
+            log.warn("quick entry: failed to allocate command: {}", .{err});
+            return;
+        };
+        if (session.resume_cmd) |old| allocator.free(old);
+        session.resume_cmd = command;
+
+        if (!self.quick_entry_component.show(std.fs.path.basename(configured))) {
+            allocator.free(command);
+            session.resume_cmd = null;
+            return;
+        }
+        session.hidden = true;
+        session.ensureSpawnedFresh(dir_z, &app.loop) catch |err| {
+            log.warn("quick entry: failed to start a terminal in {s}: {}", .{ dir, err });
+            session.hidden = false;
+            // Spawn consumes resume_cmd only on success.
+            if (session.resume_cmd) |cmd| {
+                allocator.free(cmd);
+                session.resume_cmd = null;
+            }
+            self.quick_entry_component.close();
+            self.ui.showToast("Quick entry: failed to start a terminal", now);
+            return;
+        };
+        self.quick = .{ .session_id = session.id, .prev_app = prev_app };
+        prev_kept = true;
+        log.info("quick entry: starting {s} in {s} (session {d})", .{ quick_entry_command, dir, session.id });
+        compactSessions(sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
+    }
+
+    /// Enter in the quick entry box: show the terminal started for it, in full
+    /// view, and send `text` (owned) to its Claude, now or as soon as it is up.
+    fn submitQuickEntry(self: *Window, text: []const u8, now: i64) void {
+        const quick = if (self.quick) |*q| q else {
+            self.app.allocator.free(text);
+            return;
+        };
+        // Cadre keeps the screen from here: there is no going back to that app.
+        if (quick.prev_app) |prev| hotkey.release(prev, false);
+        quick.prev_app = null;
+        quick.text = text;
+        const session_id = quick.session_id;
+        if (findSessionIndexById(self.sessions, session_id)) |idx| {
+            self.revealInGrid(idx);
+            // The reveal sorted it into the grid: look it up again.
+            if (findSessionIndexById(self.sessions, session_id)) |shown| self.showFull(shown, now);
+        }
+        self.tickQuickEntry(now);
+    }
+
+    /// Esc in the quick entry box: close the terminal started for it, and give
+    /// the screen back to the app the shortcut was pressed in.
+    fn cancelQuickEntry(self: *Window) void {
+        const quick = self.quick orelse return;
+        self.quick = null;
+        if (quick.text) |text| self.app.allocator.free(text);
+        self.closeQuickEntryTerminal(quick.session_id);
+        if (quick.prev_app) |prev| hotkey.release(prev, true);
+    }
+
+    /// Per frame while a quick entry is on its way: watch its terminal for
+    /// Claude's input box, tell the box on screen, and send the text once it
+    /// has been written and Claude can take it.
+    fn tickQuickEntry(self: *Window, now: i64) void {
+        const allocator = self.app.allocator;
+        const quick = if (self.quick) |*q| q else return;
+        const idx = findSessionIndexById(self.sessions, quick.session_id) orelse return self.dropQuickEntry(now);
+        const session = self.sessions[idx];
+        if (session.dead) return self.dropQuickEntry(now);
+
+        const box_up = if (session.terminal) |*terminal| prompt_box.onScreen(terminal) else false;
+        if (!box_up) {
+            quick.box_since_ms = null;
+        } else if (quick.box_since_ms == null) {
+            quick.box_since_ms = now;
+        }
+        const ready = if (quick.box_since_ms) |since| now - since >= quick_entry_settle_ms else false;
+        self.quick_entry_component.setReady(ready);
+
+        // ponytail: waits for as long as the terminal lives. A Claude that
+        // never starts holds the text until the next quick entry shelves it.
+        const text = quick.text orelse return;
+        if (!ready) return;
+        self.quick = null;
+        defer allocator.free(text);
+        log.info("quick entry: sending {d} bytes to session {d}", .{ text.len, session.id });
+        // The composer's Enter: one bracketed paste, then Return.
+        terminal_actions.pasteText(session, allocator, text, self.session_interaction_component) catch |err| {
+            log.warn("quick entry paste failed: {}", .{err});
+            self.keepAsDraft(session, text);
+            self.ui.showToast("Couldn't send \u{2014} kept your text", now);
+            return;
+        };
+        input_keys.handleKeyInput(session, c.SDLK_RETURN, 0) catch |err| {
+            log.warn("quick entry send failed: {}", .{err});
+        };
+    }
+
+    /// A quick entry whose text is still waiting for Claude stops waiting: the
+    /// text becomes that terminal's composer draft, so nothing written is lost.
+    fn shelveQuickEntry(self: *Window) void {
+        const quick = self.quick orelse return;
+        self.quick = null;
+        if (quick.prev_app) |prev| hotkey.release(prev, false);
+        const text = quick.text orelse return;
+        defer self.app.allocator.free(text);
+        const idx = findSessionIndexById(self.sessions, quick.session_id) orelse return;
+        log.info("quick entry: session {d} never took its text; kept as its draft", .{quick.session_id});
+        self.keepAsDraft(self.sessions[idx], text);
+    }
+
+    /// The terminal a quick entry was for has exited or been closed.
+    fn dropQuickEntry(self: *Window, now: i64) void {
+        const quick = self.quick orelse return;
+        self.quick = null;
+        log.warn("quick entry: session {d} is gone", .{quick.session_id});
+        self.quick_entry_component.close();
+        if (quick.prev_app) |prev| hotkey.release(prev, false);
+        if (quick.text) |text| {
+            self.app.allocator.free(text);
+        } else {
+            // Still out of the grid: don't leave a dead terminal behind there.
+            self.closeQuickEntryTerminal(quick.session_id);
+        }
+        self.ui.showToast("Quick entry: its terminal closed", now);
+    }
+
+    /// Close a quick entry's terminal while it is still out of the grid. Not
+    /// through despawnSessionAtIndex: it was never a terminal of the user's,
+    /// so Cmd+Shift+T has nothing to bring back and no tile has to move.
+    fn closeQuickEntryTerminal(self: *Window, session_id: usize) void {
+        const idx = findSessionIndexById(self.sessions, session_id) orelse return;
+        const session = self.sessions[idx];
+        session.despawn(self.app.allocator);
+        // despawn leaves the flag set, and the next terminal in this slot must show.
+        session.hidden = false;
+        self.session_interaction_component.resetView(idx);
+        compactSessions(self.sessions, self.session_interaction_component.viewSlice(), &self.render_cache, &self.anim_state);
+    }
+
+    /// Put `text` in `session`'s composer, as the draft it comes back with.
+    fn keepAsDraft(self: *Window, session: *SessionState, text: []const u8) void {
+        self.composer_component.returnText(session.persist_index, text);
+        if (session.tmux_backed) tmux.setComposerDraft(self.app.allocator, session.persist_index, text);
+    }
+
+    /// Cut to the full view of the terminal in `idx`.
+    fn showFull(self: *Window, idx: usize, now: i64) void {
+        const full = Rect{ .x = 0, .y = 0, .w = self.render_width, .h = self.render_height };
+        self.anim_state.focused_session = idx;
+        self.anim_state.previous_session = idx;
+        self.anim_state.mode = .Full;
+        self.anim_state.start_time = now;
+        self.anim_state.start_rect = full;
+        self.anim_state.target_rect = full;
+        self.applyTerminalLayout();
     }
 
     fn handleExternalSpawnRequest(self: *Window, pending: *control.PendingSpawn, now: i64) void {
@@ -3854,6 +4108,8 @@ const Window = struct {
             }
         }
 
+        self.tickQuickEntry(now);
+
         if (self.hidden_switcher_comp_ptr.open) {
             if (self.hosting_last_poll_ms == null or now - self.hosting_last_poll_ms.? >= hosting_poll_interval_ms) {
                 self.hosting_last_poll_ms = now;
@@ -4361,6 +4617,8 @@ const Window = struct {
                 self.composer_height = height;
                 self.applyTerminalLayout();
             },
+            .QuickEntrySubmit => |submit| self.submitQuickEntry(submit.text, now),
+            .QuickEntryCancel => self.cancelQuickEntry(),
         };
         if (self.refreshGridReserves(&ui_update_host)) self.applyTerminalLayout();
 
@@ -4850,6 +5108,11 @@ pub fn run() !void {
         tmux.reapDetachedSessions(allocator, keep.items, all_indexed);
     }
 
+    // Quick entry is on when it has a folder to start Claude in.
+    if (app.config.quick_entry.directory != null) {
+        hotkey.install(.{ .context = &app.core, .callback = platform.pushWakeEventFromOpaque });
+    }
+
     // Main loop: optionally wait for the next wake-worthy event, then handle SDL
     // input, feed PTY output into terminals, apply async notifications, drive
     // animations, and render each window at the current cadence.
@@ -4884,6 +5147,7 @@ pub fn run() !void {
 
         if (!app.running) break;
         app.createWindowFromRequest();
+        if (hotkey.take()) app.openQuickEntry(now);
 
         app.loop.run(.no_wait) catch |err| {
             log.err("xev loop run failed: {}", .{err});
