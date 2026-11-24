@@ -454,6 +454,9 @@ pub const ComposerComponent = struct {
     /// Already yielded during the current prompt/overlay, so a click back into
     /// the box sticks instead of being yielded away again.
     yield_spent: bool = false,
+    /// Stepped aside and came back: the keyboard comes back with it, on the
+    /// next frame the box is up.
+    came_back: bool = false,
     session: usize = 0,
     /// persist_index of the pane whose draft is in the box.
     draft_key: ?usize = null,
@@ -736,8 +739,13 @@ pub const ComposerComponent = struct {
                 if (self.want_focus) self.focusTerminal(view);
                 self.yielded = false;
             } else {
+                // Back before it had slid all the way out (which hides it, and
+                // shows it again with the keyboard): a paste sent at once, like
+                // a quick entry's, is in Claude's input for a moment only.
+                if (self.came_back) self.focusComposer(view);
                 self.syncFocus(view, host);
             }
+            self.came_back = false;
             // After the focus sync, so the tint follows a focus change the same frame.
             self.applyStyle(view, host, placement);
             self.applyTheme(view, host, on_prompt);
@@ -891,6 +899,8 @@ pub const ComposerComponent = struct {
         const fresh = self.spot_fresh;
         self.spot_fresh = false;
         if (off == self.off and !fresh) return;
+        self.came_back = self.off and !off;
+        if (off != self.off) log.info("composer {s} (session {d})", .{ if (off) "stepped aside" else "back", self.session });
         self.off = off;
         const to: f32 = if (off) 1 else 0;
         self.slide = if (self.animate and !fresh) .{ .from = self.slid, .to = to, .start_ms = now_ms } else null;
@@ -965,10 +975,12 @@ pub const ComposerComponent = struct {
             self.yield_spent = false;
             if (self.yielded) {
                 self.yielded = false;
+                log.info("composer has the keyboard back (session {d})", .{host.focused_session});
                 self.focusComposer(view);
                 return;
             }
         } else if (!self.yield_spent and self.want_focus and (host.text_entry_open or view.textLength() == 0)) {
+            log.info("composer yields the keyboard (session {d}, approval={})", .{ host.focused_session, approval });
             self.focusTerminal(view);
             self.yielded = true;
             self.yield_spent = true;
@@ -1592,6 +1604,39 @@ test "turning the composer off lasts only for the input box that is up" {
     host.view_mode = .Full;
     try testing.expect(composer.place(&host) == .on_prompt);
     try testing.expectEqual(@as(f32, 0), composer.slid);
+}
+
+test "a composer back from stepping aside takes the keyboard back" {
+    var sessions = [_]types.SessionUiInfo{
+        .{ .dead = false, .spawned = true, .claude_live = true, .persist_index = 4 },
+    };
+    var host = testHost(&sessions);
+    host.term_cols = 80;
+    host.term_rows = 40;
+    host.full_font = .{ .cell_w = 10, .cell_h = 20, .px = 16, .ascent = 15 };
+    const empty = PromptBox{ .top_rule = 30, .first = 31, .last = 31 };
+    const holding = PromptBox{ .top_rule = 30, .first = 31, .last = 31, .typed = true };
+    var composer = ComposerComponent{ .allocator = testing.allocator, .window = undefined, .root = undefined, .view = null };
+
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(!composer.came_back);
+    // A paste sent at once (a quick entry's) is in Claude's input for a
+    // moment: the box starts out of the way, giving the keyboard up...
+    sessions[0].prompt_box = holding;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(composer.off);
+    try testing.expect(!composer.came_back);
+    // ...and is still sliding when the input empties. It never hid, so
+    // nothing shows it again: coming back has to ask for the keyboard itself.
+    sessions[0].prompt_box = empty;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(!composer.off);
+    try testing.expect(composer.came_back);
+    // Asked once: an input that stays empty asks for nothing more.
+    composer.came_back = false;
+    try testing.expect(composer.place(&host) == .on_prompt);
+    try testing.expect(!composer.came_back);
 }
 
 test "the composer steps aside while Claude's own input holds text" {
