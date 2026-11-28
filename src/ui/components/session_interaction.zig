@@ -805,7 +805,7 @@ pub const SessionInteractionComponent = struct {
                 // below (firing the deferred select the press was holding);
                 // staying put lets update()/this path promote on the time bar.
                 // Active: the drag owns the pointer — re-slot when the cursor
-                // enters the CENTER zone of another tile, and skip hover and
+                // crosses into another tile, and skip hover and
                 // selection handling entirely.
                 if (self.reorder_phase != .idle and !self.dragAllowed(host)) {
                     // View changed mid-press (zoom animation etc.) — abandon.
@@ -2062,10 +2062,10 @@ fn reorderPressMoved(dx: f32, dy: f32) bool {
     return dx * dx + dy * dy > reorder_drag_slop_px * reorder_drag_slop_px;
 }
 
-/// Slot the dragged tile should re-slot into, or null. Only fires when the
-/// pointer is inside the inner half-size box around a tile's center — entering
-/// the center zone is the trigger, so jitter on a tile boundary can never
-/// flicker tiles back and forth — and only for slots holding a visible tile.
+/// Slot the dragged tile should re-slot into, or null. Fires as soon as the
+/// pointer crosses into a tile, past a thin dead band along its edges so
+/// jitter on a tile boundary can never flicker tiles back and forth, and only
+/// for slots holding a visible tile.
 fn reorderTargetSlot(
     mouse_x: c_int,
     mouse_y: c_int,
@@ -2081,11 +2081,13 @@ fn reorderTargetSlot(
     const row: usize = @min(@as(usize, @intCast(@divFloor(mouse_y, cell_h))), grid_rows - 1);
     const slot: usize = row * grid_cols + col;
     if (slot >= visible_count) return null;
-    // Inner 50% box: within a quarter cell of the center on both axes.
+    // Dead band: 1/32 of the cell along each edge.
     const local_x = mouse_x - @as(c_int, @intCast(col)) * cell_w;
     const local_y = mouse_y - @as(c_int, @intCast(row)) * cell_h;
-    if (@abs(local_x - @divTrunc(cell_w, 2)) > @divTrunc(cell_w, 4)) return null;
-    if (@abs(local_y - @divTrunc(cell_h, 2)) > @divTrunc(cell_h, 4)) return null;
+    const band_x = @divTrunc(cell_w, 32);
+    const band_y = @divTrunc(cell_h, 32);
+    if (local_x < band_x or local_x >= cell_w - band_x) return null;
+    if (local_y < band_y or local_y >= cell_h - band_y) return null;
     return slot;
 }
 
@@ -2129,14 +2131,14 @@ fn terminalContentRect(session_rect: geom.Rect, ui_scale: f32) ?geom.Rect {
 
 const testing = std.testing;
 
-test "reorderTargetSlot fires only in a tile's center zone, only on visible slots" {
-    // 2x2 grid of 100x100 cells. Tile 1 spans x 100..200; its inner box is
-    // x 125..175, y 25..75.
+test "reorderTargetSlot fires once inside a tile, only on visible slots" {
+    // 2x2 grid of 100x100 cells. Tile 1 spans x 100..200; its dead band is
+    // 3px along each edge.
     try testing.expectEqual(@as(?usize, 1), reorderTargetSlot(150, 50, 2, 2, 100, 100, 4));
-    try testing.expectEqual(@as(?usize, 1), reorderTargetSlot(126, 30, 2, 2, 100, 100, 4));
-    // Jitter on the tile 0/1 boundary lands in neither center zone.
+    try testing.expectEqual(@as(?usize, 1), reorderTargetSlot(103, 5, 2, 2, 100, 100, 4));
+    // Jitter on the tile 0/1 boundary lands in neither tile.
     try testing.expectEqual(@as(?usize, null), reorderTargetSlot(101, 50, 2, 2, 100, 100, 4));
-    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(99, 50, 2, 2, 100, 100, 4));
+    try testing.expectEqual(@as(?usize, null), reorderTargetSlot(98, 50, 2, 2, 100, 100, 4));
     // The center of an empty slot (3 visible in a 2x2 grid) is inert; a
     // visible slot's center works.
     try testing.expectEqual(@as(?usize, null), reorderTargetSlot(150, 150, 2, 2, 100, 100, 3));

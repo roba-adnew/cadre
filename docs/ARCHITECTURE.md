@@ -403,12 +403,12 @@ its input box at the top of a tall screen, above the rows `find` looks at.
 Press-and-hold a grid tile (220ms, <6px travel) to start a reorder drag;
 moving early demotes the press to the normal text-selection drag. The gesture
 lives in `SessionInteractionComponent` and commits **live**: each time the
-cursor enters the inner half-size center zone of another visible tile, the
+cursor crosses into another visible tile (past a thin edge dead band), the
 component emits one `UiAction.ReorderGridSessions{from, to}` springboard move
 (no permutation payload, no preview/commit split).
 
 ```
-SessionInteractionComponent (hold -> .active, center-zone hysteresis)
+SessionInteractionComponent (hold -> .active, edge dead-band hysteresis)
     | UiAction.ReorderGridSessions{from, to}   (one per re-slot, validated live)
     v
 runtime: springboardOrder() -> applyReorder()
